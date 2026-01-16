@@ -193,15 +193,6 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 ---
 
-## 🙏 Acknowledgments
-
-- **Supabase** - For the amazing backend infrastructure
-- **Lucide** - For the beautiful icon set
-- **Tailwind CSS** - For the utility-first CSS framework
-- **Vite** - For the lightning-fast build tool
-
----
-
 <div align="center">
 
 Made with ❤️ by [EddSaul](https://github.com/EddSaul)
