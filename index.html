@@ -1,0 +1,80 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Lumina Board</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Architects+Daughter&family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <script>
+      tailwind.config = {
+        darkMode: 'class',
+        theme: {
+          extend: {
+            fontFamily: {
+              sans: ['Inter', 'sans-serif'],
+              hand: ['"Architects Daughter"', 'cursive'],
+            },
+            colors: {
+              cream: {
+                50: '#FFFEFA',
+                100: '#FFFBF0', // Main Light Background
+                200: '#FFF6D6',
+                300: '#FFEFB8',
+              },
+              ink: {
+                400: '#A1A1AA',
+                800: '#27272A',
+                900: '#18181B', // Main Dark Background
+              }
+            },
+            boxShadow: {
+              'hard': '4px 4px 0px 0px rgba(0,0,0,0.1)',
+              'hard-md': '6px 6px 0px 0px rgba(0,0,0,0.1)',
+              'hard-dark': '4px 4px 0px 0px rgba(0,0,0,0.4)',
+            }
+          }
+        }
+      }
+    </script>
+    <style>
+      body {
+        transition: background-color 0.3s ease, color 0.3s ease;
+      }
+      /* Custom scrollbar for a cleaner look */
+      ::-webkit-scrollbar {
+        width: 8px;
+        height: 8px;
+      }
+      ::-webkit-scrollbar-track {
+        background: transparent;
+      }
+      ::-webkit-scrollbar-thumb {
+        background: #D4D4D8;
+        border-radius: 4px;
+      }
+      ::-webkit-scrollbar-thumb:hover {
+        background: #A1A1AA;
+      }
+      .dark ::-webkit-scrollbar-thumb {
+        background: #3F3F46;
+      }
+    </style>
+  <script type="importmap">
+{
+  "imports": {
+    "react-dom/": "https://esm.sh/react-dom@^19.2.3/",
+    "react/": "https://esm.sh/react@^19.2.3/",
+    "react": "https://esm.sh/react@^19.2.3",
+    "lucide-react": "https://esm.sh/lucide-react@^0.562.0"
+  }
+}
+</script>
+</head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/index.tsx"></script>
+  </body>
+</html>
