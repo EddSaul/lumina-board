@@ -2,6 +2,12 @@ import React, { useState } from 'react';
 import { Sparkles, X, Search, Plus, FileText, Clock, Layout, Keyboard, Settings, Loader2, Trash2, Edit2, Check, ArrowLeft } from 'lucide-react';
 import { Theme } from '../../types';
 
+interface BoardMeta {
+  id: string;
+  title: string;
+  last_accessed_at: string;
+}
+
 interface SidebarProps {
   isOpen: boolean;
   onClose: () => void;
@@ -12,27 +18,41 @@ interface SidebarProps {
   onShowShortcuts: () => void;
   onOpenSettings: () => void;
   onBackToDashboard: () => void;
+  currentBoardTitle?: string;
+  currentBoardId?: string;
+  boards?: BoardMeta[];
+  onSwitchBoard?: (boardId: string) => void;
 }
 
-export const Sidebar: React.FC<SidebarProps> = ({ 
-  isOpen, 
-  onClose, 
+export const Sidebar: React.FC<SidebarProps> = ({
+  isOpen,
+  onClose,
   theme,
   isGridOn,
   toggleGrid,
   onCreateBoard,
   onShowShortcuts,
   onOpenSettings,
-  onBackToDashboard
+  onBackToDashboard,
+  currentBoardTitle = 'Untitled Board',
+  currentBoardId,
+  boards = [],
+  onSwitchBoard
 }) => {
-  const [activeBoardId, setActiveBoardId] = useState('1');
+  const formatRelativeTime = (dateString: string) => {
+    const date = new Date(dateString);
+    const now = new Date();
+    const diffMs = now.getTime() - date.getTime();
+    const diffMins = Math.floor(diffMs / 60000);
+    const diffHours = Math.floor(diffMs / 3600000);
+    const diffDays = Math.floor(diffMs / 86400000);
 
-  // State for managing boards (In a real app this would come from the Board/App state)
-  const [boards, setBoards] = useState([
-    { id: '1', name: 'Q4 Product Roadmap', date: '2 mins ago' },
-    { id: '2', name: 'Marketing Campaign', date: 'Yesterday' },
-    { id: '3', name: 'UI Kit Design', date: '3 days ago' },
-  ]);
+    if (diffMins < 1) return 'Just now';
+    if (diffMins < 60) return `${diffMins} min${diffMins > 1 ? 's' : ''} ago`;
+    if (diffHours < 24) return `${diffHours} hour${diffHours > 1 ? 's' : ''} ago`;
+    if (diffDays < 7) return `${diffDays} day${diffDays > 1 ? 's' : ''} ago`;
+    return date.toLocaleDateString();
+  };
 
   return (
     <>
@@ -73,32 +93,41 @@ export const Sidebar: React.FC<SidebarProps> = ({
           {/* Current Board Info */}
           <div className="px-3 py-4 bg-orange-50 dark:bg-orange-900/20 rounded-xl border border-orange-100 dark:border-orange-800/30">
              <h3 className="text-xs font-bold text-orange-600 dark:text-orange-300 uppercase tracking-wider mb-1">Current Board</h3>
-             <p className="font-bold text-ink-900 dark:text-white truncate">Q4 Product Roadmap</p>
+             <p className="font-bold text-ink-900 dark:text-white truncate">{currentBoardTitle}</p>
           </div>
 
           {/* Boards List */}
-          <div>
-            <h3 className="text-xs font-bold text-gray-400 uppercase tracking-wider mb-3 px-2">Quick Switch</h3>
-            <div className="space-y-1">
-               {boards.map((board) => (
-                   <div 
-                     key={board.id}
-                     className={`flex items-center p-3 rounded-xl cursor-pointer transition-all ${
-                       board.id === activeBoardId
-                         ? 'bg-white dark:bg-zinc-800 border border-gray-200 dark:border-zinc-700 shadow-sm' 
-                         : 'hover:bg-gray-100 dark:hover:bg-zinc-800 border border-transparent opacity-70 hover:opacity-100'
-                     }`}
-                   >
-                      <div className="w-8 h-8 rounded-lg bg-gray-100 dark:bg-zinc-700 flex items-center justify-center mr-3 text-gray-500">
-                        <FileText size={16} />
-                      </div>
-                      <div className="flex-1 min-w-0">
-                         <h4 className="text-sm font-semibold truncate text-gray-700 dark:text-gray-300">{board.name}</h4>
-                      </div>
-                   </div>
-               ))}
+          {boards.length > 0 && (
+            <div>
+              <h3 className="text-xs font-bold text-gray-400 uppercase tracking-wider mb-3 px-2">Quick Switch</h3>
+              <div className="space-y-1 max-h-64 overflow-y-auto">
+                 {boards.slice(0, 10).map((board) => (
+                     <div
+                       key={board.id}
+                       onClick={() => {
+                         if (onSwitchBoard && board.id !== currentBoardId) {
+                           onSwitchBoard(board.id);
+                           onClose();
+                         }
+                       }}
+                       className={`flex items-center p-3 rounded-xl cursor-pointer transition-all ${
+                         board.id === currentBoardId
+                           ? 'bg-white dark:bg-zinc-800 border border-gray-200 dark:border-zinc-700 shadow-sm'
+                           : 'hover:bg-gray-100 dark:hover:bg-zinc-800 border border-transparent opacity-70 hover:opacity-100'
+                       }`}
+                     >
+                        <div className="w-8 h-8 rounded-lg bg-gray-100 dark:bg-zinc-700 flex items-center justify-center mr-3 text-gray-500">
+                          <FileText size={16} />
+                        </div>
+                        <div className="flex-1 min-w-0">
+                           <h4 className="text-sm font-semibold truncate text-gray-700 dark:text-gray-300">{board.title}</h4>
+                           <p className="text-xs text-gray-400 mt-0.5">{formatRelativeTime(board.last_accessed_at)}</p>
+                        </div>
+                     </div>
+                 ))}
+              </div>
             </div>
-          </div>
+          )}
 
           {/* Useful Utilities Section */}
           <div>
