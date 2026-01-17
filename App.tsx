@@ -4,10 +4,12 @@ import { Dashboard } from './components/Dashboard/Dashboard';
 import { Board } from './components/Board/Board';
 import { Theme } from './types';
 import { AuthProvider, useAuth } from './contexts/AuthContext';
+import { boardOperations } from './lib/database';
 
 function AppContent() {
   const { user, loading } = useAuth();
   const [currentView, setCurrentView] = useState<'dashboard' | 'board'>('dashboard');
+  const [currentBoardId, setCurrentBoardId] = useState<string | null>(null);
 
   // Initialize theme from system preference or default to light
   const [theme, setTheme] = useState<Theme>(() => {
@@ -27,6 +29,27 @@ function AppContent() {
 
   const toggleTheme = () => {
     setTheme(prev => prev === 'light' ? 'dark' : 'light');
+  };
+
+  const handleOpenBoard = async (id: string) => {
+    if (id === 'new') {
+      // Create a new board first
+      try {
+        const newBoard = await boardOperations.createBoard('Untitled Board');
+        setCurrentBoardId(newBoard.id);
+        setCurrentView('board');
+      } catch (error) {
+        console.error('Error creating board:', error);
+      }
+    } else {
+      setCurrentBoardId(id);
+      setCurrentView('board');
+    }
+  };
+
+  const handleBackToDashboard = () => {
+    setCurrentView('dashboard');
+    setCurrentBoardId(null);
   };
 
   // Show loading spinner while checking auth status
@@ -53,15 +76,16 @@ function AppContent() {
     <>
       {currentView === 'dashboard' && (
         <Dashboard
-          onOpenBoard={(id) => setCurrentView('board')}
+          onOpenBoard={handleOpenBoard}
           theme={theme}
           toggleTheme={toggleTheme}
         />
       )}
 
-      {currentView === 'board' && (
+      {currentView === 'board' && currentBoardId && (
         <Board
-          onBack={() => setCurrentView('dashboard')}
+          boardId={currentBoardId}
+          onBack={handleBackToDashboard}
           theme={theme}
           toggleTheme={toggleTheme}
         />
