@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { Undo2, Redo2, Check, Settings2, Grid3X3, Circle, LayoutTemplate } from 'lucide-react';
+import { Undo2, Redo2, Check, Settings2, Grid3X3, Circle, LayoutTemplate, Save, CloudCheck } from 'lucide-react';
 import { Shape, ToolType, Point, PathShape, GeoShape, ConnectorShape, StickyShape, TextShape, Theme, User, GeoType, ConnectorType, BackgroundType } from '../../types';
 import { COLORS } from '../../constants';
 import { useHistory } from '../../hooks/useHistory';
@@ -11,14 +11,16 @@ import { TopBar } from '../Layout/TopBar';
 import { Toolbar } from './Toolbar';
 import { PropertiesPanel } from './PropertiesPanel';
 import * as Geo from '../../utils/geometry';
+import { boardOperations } from '../../lib/database';
 
 interface BoardProps {
+  boardId: string;
   onBack: () => void;
   theme: Theme;
   toggleTheme: () => void;
 }
 
-export const Board: React.FC<BoardProps> = ({ onBack, theme, toggleTheme }) => {
+export const Board: React.FC<BoardProps> = ({ boardId, onBack, theme, toggleTheme }) => {
   // Board Settings State
   const [backgroundType, setBackgroundType] = useState<BackgroundType>('grid');
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
@@ -28,9 +30,15 @@ export const Board: React.FC<BoardProps> = ({ onBack, theme, toggleTheme }) => {
   const [activeGeo, setActiveGeo] = useState<GeoType>('rectangle');
   const [activeConnector, setActiveConnector] = useState<ConnectorType>('curved');
   const [color, setColor] = useState(COLORS[7]); // Default Indigo
-  
+
+  // Save state
+  const [saveState, setSaveState] = useState<'saved' | 'saving' | 'unsaved'>('saved');
+  const [lastSaveTime, setLastSaveTime] = useState<Date | null>(null);
+  const [boardLoaded, setBoardLoaded] = useState(false);
+  const saveTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+
   // History
-  const { pushState, undo, redo, canUndo, canRedo, currentShapes } = useHistory([]);
+  const { pushState, undo, redo, canUndo, canRedo, currentShapes, setState } = useHistory([]);
   
   // Interaction State
   const [isPanning, setIsPanning] = useState(false);
@@ -328,6 +336,58 @@ export const Board: React.FC<BoardProps> = ({ onBack, theme, toggleTheme }) => {
     }
   };
 
+  // Load board data on mount
+  useEffect(() => {
+    const loadBoard = async () => {
+      try {
+        const board = await boardOperations.getBoard(boardId);
+        if (board) {
+          setState(board.shapes || []);
+          setBoardLoaded(true);
+          // Update last accessed time
+          await boardOperations.updateLastAccessed(boardId);
+        }
+      } catch (error) {
+        console.error('Error loading board:', error);
+        showToast('Failed to load board');
+      }
+    };
+
+    loadBoard();
+  }, [boardId]);
+
+  // Auto-save shapes when changed
+  useEffect(() => {
+    if (!boardLoaded) return; // Don't save until initial load is complete
+
+    setSaveState('unsaved');
+
+    // Clear existing timeout
+    if (saveTimeoutRef.current) {
+      clearTimeout(saveTimeoutRef.current);
+    }
+
+    // Set new timeout to save after 5 seconds
+    saveTimeoutRef.current = setTimeout(async () => {
+      try {
+        setSaveState('saving');
+        await boardOperations.saveShapes(boardId, currentShapes);
+        setSaveState('saved');
+        setLastSaveTime(new Date());
+      } catch (error) {
+        console.error('Error saving board:', error);
+        setSaveState('unsaved');
+        showToast('Failed to save changes');
+      }
+    }, 5000);
+
+    return () => {
+      if (saveTimeoutRef.current) {
+        clearTimeout(saveTimeoutRef.current);
+      }
+    };
+  }, [currentShapes, boardLoaded, boardId]);
+
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if ((e.ctrlKey || e.metaKey) && e.key === 'z') {
@@ -507,7 +567,30 @@ export const Board: React.FC<BoardProps> = ({ onBack, theme, toggleTheme }) => {
             isHidden={interactionState !== 'idle'}
           />
 
-          <div className="absolute bottom-6 right-6 flex space-x-2">
+          <div className="absolute bottom-6 right-6 flex items-center space-x-2">
+             {/* Save indicator */}
+             <div className="px-3 py-2 bg-white dark:bg-zinc-800 rounded-full shadow-lg flex items-center space-x-2 text-sm">
+                {saveState === 'saving' && (
+                  <>
+                    <Save size={16} className="text-gray-500 animate-pulse" />
+                    <span className="text-gray-500">Saving...</span>
+                  </>
+                )}
+                {saveState === 'saved' && (
+                  <>
+                    <CloudCheck size={16} className="text-green-500" />
+                    <span className="text-gray-500">
+                      {lastSaveTime ? `Saved ${Math.floor((new Date().getTime() - lastSaveTime.getTime()) / 1000)}s ago` : 'Saved'}
+                    </span>
+                  </>
+                )}
+                {saveState === 'unsaved' && (
+                  <>
+                    <Save size={16} className="text-orange-500" />
+                    <span className="text-gray-500">Unsaved</span>
+                  </>
+                )}
+             </div>
              <button onClick={undo} disabled={!canUndo} className="p-3 bg-white dark:bg-zinc-800 rounded-full shadow-lg disabled:opacity-50 text-gray-700 dark:text-gray-200"><Undo2 size={20} /></button>
              <button onClick={redo} disabled={!canRedo} className="p-3 bg-white dark:bg-zinc-800 rounded-full shadow-lg disabled:opacity-50 text-gray-700 dark:text-gray-200"><Redo2 size={20} /></button>
           </div>

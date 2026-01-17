@@ -11,6 +11,11 @@ export const useHistory = (initialState: Shape[]) => {
     setCurrentIndex(nextHistory.length - 1);
   }, [history, currentIndex]);
 
+  const setState = useCallback((newState: Shape[]) => {
+    setHistory([newState]);
+    setCurrentIndex(0);
+  }, []);
+
   const undo = useCallback(() => {
     if (currentIndex > 0) {
       setCurrentIndex(prev => prev - 1);
@@ -30,5 +35,5 @@ export const useHistory = (initialState: Shape[]) => {
   const canUndo = currentIndex > 0;
   const canRedo = currentIndex < history.length - 1;
 
-  return { pushState, undo, redo, canUndo, canRedo, currentShapes: history[currentIndex] };
+  return { pushState, setState, undo, redo, canUndo, canRedo, currentShapes: history[currentIndex] };
 };
