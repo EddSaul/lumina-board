@@ -16,11 +16,12 @@ import { boardOperations } from '../../lib/database';
 interface BoardProps {
   boardId: string;
   onBack: () => void;
+  onSwitchBoard?: (boardId: string) => void;
   theme: Theme;
   toggleTheme: () => void;
 }
 
-export const Board: React.FC<BoardProps> = ({ boardId, onBack, theme, toggleTheme }) => {
+export const Board: React.FC<BoardProps> = ({ boardId, onBack, onSwitchBoard, theme, toggleTheme }) => {
   // Board Settings State
   const [backgroundType, setBackgroundType] = useState<BackgroundType>('grid');
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
@@ -36,6 +37,10 @@ export const Board: React.FC<BoardProps> = ({ boardId, onBack, theme, toggleThem
   const [lastSaveTime, setLastSaveTime] = useState<Date | null>(null);
   const [boardLoaded, setBoardLoaded] = useState(false);
   const saveTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+
+  // Board data
+  const [currentBoardTitle, setCurrentBoardTitle] = useState('Untitled Board');
+  const [allBoards, setAllBoards] = useState<any[]>([]);
 
   // History
   const { pushState, undo, redo, canUndo, canRedo, currentShapes, setState } = useHistory([]);
@@ -76,6 +81,28 @@ export const Board: React.FC<BoardProps> = ({ boardId, onBack, theme, toggleThem
   };
 
   const getShapeById = (id: string) => currentShapes.find(s => s.id === id);
+
+  // Get cursor style based on tool and state
+  const getCursorStyle = () => {
+    const isDark = theme === 'dark';
+
+    if (isPanning) return isDark ? 'custom-cursor-grabbing-dark' : 'custom-cursor-grabbing-light';
+
+    switch (activeTool) {
+      case 'select':
+        return 'cursor-default';
+      case 'hand':
+        return isDark ? 'custom-cursor-grab-dark' : 'custom-cursor-grab-light';
+      case 'pen':
+      case 'geo':
+      case 'sticky':
+      case 'text':
+      case 'connector':
+        return 'cursor-crosshair';
+      default:
+        return 'cursor-default';
+    }
+  };
 
   // Properties Panel Handlers
   const handleShapeUpdate = (updates: Partial<Shape>) => {
@@ -336,25 +363,50 @@ export const Board: React.FC<BoardProps> = ({ boardId, onBack, theme, toggleThem
     }
   };
 
-  // Load board data on mount
+  // Load board data and all boards on mount
   useEffect(() => {
-    const loadBoard = async () => {
+    const loadData = async () => {
       try {
-        const board = await boardOperations.getBoard(boardId);
+        const [board, boards] = await Promise.all([
+          boardOperations.getBoard(boardId),
+          boardOperations.getBoards()
+        ]);
+
         if (board) {
           setState(board.shapes || []);
+          setCurrentBoardTitle(board.title);
           setBoardLoaded(true);
           // Update last accessed time
           await boardOperations.updateLastAccessed(boardId);
         }
+
+        setAllBoards(boards);
       } catch (error) {
         console.error('Error loading board:', error);
         showToast('Failed to load board');
       }
     };
 
-    loadBoard();
+    loadData();
   }, [boardId]);
+
+  // Handle board switch
+  const handleSwitchBoard = async (newBoardId: string) => {
+    // Save current board before switching
+    if (saveTimeoutRef.current) {
+      clearTimeout(saveTimeoutRef.current);
+    }
+
+    try {
+      await boardOperations.saveShapes(boardId, currentShapes);
+      if (onSwitchBoard) {
+        onSwitchBoard(newBoardId);
+      }
+    } catch (error) {
+      console.error('Error saving board before switch:', error);
+      showToast('Failed to save board');
+    }
+  };
 
   // Auto-save shapes when changed
   useEffect(() => {
@@ -390,12 +442,47 @@ export const Board: React.FC<BoardProps> = ({ boardId, onBack, theme, toggleThem
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
+      // Ignore if typing in input/textarea
+      const isTyping = document.activeElement?.tagName === 'TEXTAREA' || document.activeElement?.tagName === 'INPUT';
+
+      // Undo/Redo
       if ((e.ctrlKey || e.metaKey) && e.key === 'z') {
+        e.preventDefault();
         if (e.shiftKey) redo(); else undo();
       }
-      if (e.key === 'Backspace' || e.key === 'Delete') {
-        if (selectedId && document.activeElement?.tagName !== 'TEXTAREA' && document.activeElement?.tagName !== 'INPUT') {
+
+      // Delete
+      if ((e.key === 'Backspace' || e.key === 'Delete') && !isTyping) {
+        if (selectedId) {
+          e.preventDefault();
           handleDelete();
+        }
+      }
+
+      // Tool shortcuts (only when not typing)
+      if (!isTyping && !e.ctrlKey && !e.metaKey) {
+        switch (e.key.toLowerCase()) {
+          case 'v':
+            setActiveTool('select');
+            break;
+          case 'h':
+            setActiveTool('hand');
+            break;
+          case 'p':
+            setActiveTool('pen');
+            break;
+          case 'g':
+            setActiveTool('geo');
+            break;
+          case 'c':
+            setActiveTool('connector');
+            break;
+          case 's':
+            setActiveTool('sticky');
+            break;
+          case 't':
+            setActiveTool('text');
+            break;
         }
       }
     };
@@ -482,21 +569,58 @@ export const Board: React.FC<BoardProps> = ({ boardId, onBack, theme, toggleThem
 
   return (
     <div className="w-full h-screen overflow-hidden bg-cream-50 dark:bg-zinc-900 flex flex-col relative touch-none">
-       <Sidebar 
-          isOpen={isMenuOpen} 
-          onClose={() => setIsMenuOpen(false)} 
-          theme={theme} 
-          isGridOn={backgroundType === 'grid'} 
-          toggleGrid={() => setBackgroundType(prev => prev === 'grid' ? 'none' : 'grid')} 
-          onCreateBoard={() => pushState([])} 
-          onShowShortcuts={() => setShowShortcuts(true)} 
+       <style>{`
+         .custom-cursor-grab-light {
+           cursor: url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none"><path d="M18 11V6a2 2 0 0 0-2-2a2 2 0 0 0-2 2M14 10V4a2 2 0 0 0-2-2a2 2 0 0 0-2 2v2M10 10.5V6a2 2 0 0 0-2-2a2 2 0 0 0-2 2v8M18 8a2 2 0 1 1 4 0v6a8 8 0 0 1-8 8h-2c-2.8 0-4.5-.86-5.99-2.34l-3.6-3.6a2 2 0 0 1 2.83-2.82L7 15" stroke="%23000000" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>') 12 12, grab;
+         }
+         .custom-cursor-grab-dark {
+           cursor: url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none"><path d="M18 11V6a2 2 0 0 0-2-2a2 2 0 0 0-2 2M14 10V4a2 2 0 0 0-2-2a2 2 0 0 0-2 2v2M10 10.5V6a2 2 0 0 0-2-2a2 2 0 0 0-2 2v8M18 8a2 2 0 1 1 4 0v6a8 8 0 0 1-8 8h-2c-2.8 0-4.5-.86-5.99-2.34l-3.6-3.6a2 2 0 0 1 2.83-2.82L7 15" stroke="%23FFFFFF" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>') 12 12, grab;
+         }
+         .custom-cursor-grabbing-light {
+           cursor: url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none"><path d="M18 11.5V9a2 2 0 1 0-4 0v2M14 10V8a2 2 0 1 0-4 0v2M10 9.5V6a2 2 0 1 0-4 0v8M18 11a2 2 0 1 1 4 0v3a8 8 0 0 1-8 8h-2c-2.8 0-4.5-.86-5.99-2.34l-3.6-3.6a2 2 0 0 1 2.82-2.82L7 15.5" stroke="%23000000" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>') 12 12, grabbing;
+         }
+         .custom-cursor-grabbing-dark {
+           cursor: url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none"><path d="M18 11.5V9a2 2 0 1 0-4 0v2M14 10V8a2 2 0 1 0-4 0v2M10 9.5V6a2 2 0 1 0-4 0v8M18 11a2 2 0 1 1 4 0v3a8 8 0 0 1-8 8h-2c-2.8 0-4.5-.86-5.99-2.34l-3.6-3.6a2 2 0 0 1 2.82-2.82L7 15.5" stroke="%23FFFFFF" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>') 12 12, grabbing;
+         }
+       `}</style>
+       <Sidebar
+          isOpen={isMenuOpen}
+          onClose={() => setIsMenuOpen(false)}
+          theme={theme}
+          isGridOn={backgroundType === 'grid'}
+          toggleGrid={() => setBackgroundType(prev => prev === 'grid' ? 'none' : 'grid')}
+          onCreateBoard={() => pushState([])}
+          onShowShortcuts={() => setShowShortcuts(true)}
           onOpenSettings={() => { setIsMenuOpen(false); setIsSettingsOpen(true); }}
           onBackToDashboard={onBack}
+          currentBoardTitle={currentBoardTitle}
+          currentBoardId={boardId}
+          boards={allBoards}
+          onSwitchBoard={handleSwitchBoard}
        />
        
-       <TopBar onMenuClick={() => setIsMenuOpen(true)} collaboratorsOpen={collaboratorsOpen} setCollaboratorsOpen={setCollaboratorsOpen} onShare={copyLink} theme={theme} toggleTheme={toggleTheme} onLogout={onBack} />
+       <TopBar
+          onMenuClick={() => setIsMenuOpen(true)}
+          collaboratorsOpen={collaboratorsOpen}
+          setCollaboratorsOpen={setCollaboratorsOpen}
+          onShare={copyLink}
+          theme={theme}
+          toggleTheme={toggleTheme}
+          onLogout={onBack}
+          boardTitle={currentBoardTitle}
+          onRenameBoard={async (newTitle) => {
+            try {
+              await boardOperations.updateBoardTitle(boardId, newTitle);
+              setCurrentBoardTitle(newTitle);
+              showToast('Board renamed');
+            } catch (error) {
+              console.error('Error renaming board:', error);
+              showToast('Failed to rename board');
+            }
+          }}
+       />
        
-       <div className="flex-1 relative cursor-crosshair" onWheel={handleWheel}>
+       <div className={`flex-1 relative ${getCursorStyle()}`} onWheel={handleWheel}>
           <svg 
             ref={svgRef}
             className="w-full h-full block touch-none"
@@ -641,6 +765,77 @@ export const Board: React.FC<BoardProps> = ({ boardId, onBack, theme, toggleThem
                      <div className={`w-4 h-4 bg-white rounded-full shadow-md transform transition-transform duration-300 ${theme === 'dark' ? 'translate-x-6' : 'translate-x-0'}`}></div>
                   </button>
                </div>
+             </div>
+          </div>
+       </Modal>
+
+       {/* Shortcuts Modal */}
+       <Modal isOpen={showShortcuts} onClose={() => setShowShortcuts(false)} title="Keyboard Shortcuts">
+          <div className="space-y-4">
+             <div className="space-y-2">
+                <h4 className="text-sm font-semibold text-gray-500 uppercase tracking-wider">Tools</h4>
+                <div className="space-y-1">
+                   <div className="flex justify-between items-center py-2 px-3 bg-gray-50 dark:bg-zinc-800 rounded-lg">
+                      <span className="text-sm text-gray-700 dark:text-gray-300">Select Tool</span>
+                      <kbd className="px-2 py-1 text-xs font-mono bg-white dark:bg-zinc-700 border border-gray-300 dark:border-zinc-600 rounded">V</kbd>
+                   </div>
+                   <div className="flex justify-between items-center py-2 px-3 bg-gray-50 dark:bg-zinc-800 rounded-lg">
+                      <span className="text-sm text-gray-700 dark:text-gray-300">Hand Tool</span>
+                      <kbd className="px-2 py-1 text-xs font-mono bg-white dark:bg-zinc-700 border border-gray-300 dark:border-zinc-600 rounded">H</kbd>
+                   </div>
+                   <div className="flex justify-between items-center py-2 px-3 bg-gray-50 dark:bg-zinc-800 rounded-lg">
+                      <span className="text-sm text-gray-700 dark:text-gray-300">Pen Tool</span>
+                      <kbd className="px-2 py-1 text-xs font-mono bg-white dark:bg-zinc-700 border border-gray-300 dark:border-zinc-600 rounded">P</kbd>
+                   </div>
+                   <div className="flex justify-between items-center py-2 px-3 bg-gray-50 dark:bg-zinc-800 rounded-lg">
+                      <span className="text-sm text-gray-700 dark:text-gray-300">Geo Shapes</span>
+                      <kbd className="px-2 py-1 text-xs font-mono bg-white dark:bg-zinc-700 border border-gray-300 dark:border-zinc-600 rounded">G</kbd>
+                   </div>
+                   <div className="flex justify-between items-center py-2 px-3 bg-gray-50 dark:bg-zinc-800 rounded-lg">
+                      <span className="text-sm text-gray-700 dark:text-gray-300">Connector</span>
+                      <kbd className="px-2 py-1 text-xs font-mono bg-white dark:bg-zinc-700 border border-gray-300 dark:border-zinc-600 rounded">C</kbd>
+                   </div>
+                   <div className="flex justify-between items-center py-2 px-3 bg-gray-50 dark:bg-zinc-800 rounded-lg">
+                      <span className="text-sm text-gray-700 dark:text-gray-300">Sticky Note</span>
+                      <kbd className="px-2 py-1 text-xs font-mono bg-white dark:bg-zinc-700 border border-gray-300 dark:border-zinc-600 rounded">S</kbd>
+                   </div>
+                   <div className="flex justify-between items-center py-2 px-3 bg-gray-50 dark:bg-zinc-800 rounded-lg">
+                      <span className="text-sm text-gray-700 dark:text-gray-300">Text</span>
+                      <kbd className="px-2 py-1 text-xs font-mono bg-white dark:bg-zinc-700 border border-gray-300 dark:border-zinc-600 rounded">T</kbd>
+                   </div>
+                </div>
+             </div>
+
+             <div className="space-y-2">
+                <h4 className="text-sm font-semibold text-gray-500 uppercase tracking-wider">Actions</h4>
+                <div className="space-y-1">
+                   <div className="flex justify-between items-center py-2 px-3 bg-gray-50 dark:bg-zinc-800 rounded-lg">
+                      <span className="text-sm text-gray-700 dark:text-gray-300">Undo</span>
+                      <kbd className="px-2 py-1 text-xs font-mono bg-white dark:bg-zinc-700 border border-gray-300 dark:border-zinc-600 rounded">Ctrl + Z</kbd>
+                   </div>
+                   <div className="flex justify-between items-center py-2 px-3 bg-gray-50 dark:bg-zinc-800 rounded-lg">
+                      <span className="text-sm text-gray-700 dark:text-gray-300">Redo</span>
+                      <kbd className="px-2 py-1 text-xs font-mono bg-white dark:bg-zinc-700 border border-gray-300 dark:border-zinc-600 rounded">Ctrl + Shift + Z</kbd>
+                   </div>
+                   <div className="flex justify-between items-center py-2 px-3 bg-gray-50 dark:bg-zinc-800 rounded-lg">
+                      <span className="text-sm text-gray-700 dark:text-gray-300">Delete Selected</span>
+                      <kbd className="px-2 py-1 text-xs font-mono bg-white dark:bg-zinc-700 border border-gray-300 dark:border-zinc-600 rounded">Delete / Backspace</kbd>
+                   </div>
+                </div>
+             </div>
+
+             <div className="space-y-2">
+                <h4 className="text-sm font-semibold text-gray-500 uppercase tracking-wider">View</h4>
+                <div className="space-y-1">
+                   <div className="flex justify-between items-center py-2 px-3 bg-gray-50 dark:bg-zinc-800 rounded-lg">
+                      <span className="text-sm text-gray-700 dark:text-gray-300">Zoom</span>
+                      <kbd className="px-2 py-1 text-xs font-mono bg-white dark:bg-zinc-700 border border-gray-300 dark:border-zinc-600 rounded">Ctrl + Scroll</kbd>
+                   </div>
+                   <div className="flex justify-between items-center py-2 px-3 bg-gray-50 dark:bg-zinc-800 rounded-lg">
+                      <span className="text-sm text-gray-700 dark:text-gray-300">Pan Canvas</span>
+                      <kbd className="px-2 py-1 text-xs font-mono bg-white dark:bg-zinc-700 border border-gray-300 dark:border-zinc-600 rounded">Middle Click + Drag</kbd>
+                   </div>
+                </div>
              </div>
           </div>
        </Modal>

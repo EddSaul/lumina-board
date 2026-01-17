@@ -52,6 +52,10 @@ function AppContent() {
     setCurrentBoardId(null);
   };
 
+  const handleSwitchBoard = (newBoardId: string) => {
+    setCurrentBoardId(newBoardId);
+  };
+
   // Show loading spinner while checking auth status
   if (loading) {
     return (
@@ -84,8 +88,10 @@ function AppContent() {
 
       {currentView === 'board' && currentBoardId && (
         <Board
+          key={currentBoardId}
           boardId={currentBoardId}
           onBack={handleBackToDashboard}
+          onSwitchBoard={handleSwitchBoard}
           theme={theme}
           toggleTheme={toggleTheme}
         />

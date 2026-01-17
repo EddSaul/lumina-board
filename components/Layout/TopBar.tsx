@@ -1,5 +1,5 @@
-import React from 'react';
-import { Menu, Share2, LogOut, Sparkles } from 'lucide-react';
+import React, { useState } from 'react';
+import { Menu, Share2, LogOut, Sparkles, Edit2, Check, X } from 'lucide-react';
 import { ThemeToggle } from '../Common/ThemeToggle';
 import { MOCK_USERS } from '../../constants';
 import { Theme } from '../../types';
@@ -12,6 +12,8 @@ interface TopBarProps {
   theme: Theme;
   toggleTheme: () => void;
   onLogout: () => void;
+  boardTitle?: string;
+  onRenameBoard?: (newTitle: string) => void;
 }
 
 export const TopBar: React.FC<TopBarProps> = ({
@@ -21,23 +23,88 @@ export const TopBar: React.FC<TopBarProps> = ({
   onShare,
   theme,
   toggleTheme,
-  onLogout
+  onLogout,
+  boardTitle,
+  onRenameBoard
 }) => {
+  const [isEditingTitle, setIsEditingTitle] = useState(false);
+  const [editedTitle, setEditedTitle] = useState(boardTitle || 'Untitled Board');
+
+  const handleSaveTitle = () => {
+    if (editedTitle.trim() && onRenameBoard) {
+      onRenameBoard(editedTitle.trim());
+    }
+    setIsEditingTitle(false);
+  };
+
+  const handleCancelEdit = () => {
+    setEditedTitle(boardTitle || 'Untitled Board');
+    setIsEditingTitle(false);
+  };
+
   return (
     <div className="absolute top-0 left-0 right-0 h-16 px-4 md:px-6 flex items-center justify-between z-20 pointer-events-none">
       {/* Left: Branding & Menu */}
       <div className="flex items-center space-x-4 pointer-events-auto">
-        <button 
+        <button
           onClick={onMenuClick}
           className="bg-white dark:bg-zinc-800 p-2 rounded-xl shadow-sm border border-gray-200 dark:border-zinc-700 flex items-center hover:bg-gray-50 dark:hover:bg-zinc-700 transition-colors"
         >
           <Menu size={20} className="text-gray-600 dark:text-gray-300 cursor-pointer" />
         </button>
-        <div className="hidden md:flex items-center space-x-2">
-            <span className="text-orange-500"><Sparkles size={18} fill="currentColor" /></span>
-            <h1 className="font-hand font-bold text-xl text-ink-800 dark:text-gray-100">Lumina Board</h1>
-        </div>
-        <span className="text-xs px-2 py-1 bg-orange-100 text-orange-700 rounded-md font-medium hidden md:block">Beta</span>
+
+        {/* Board Title with Edit */}
+        {boardTitle ? (
+          <div className="flex items-center space-x-2 bg-white dark:bg-zinc-800 px-3 py-2 rounded-xl shadow-sm border border-gray-200 dark:border-zinc-700">
+            {isEditingTitle ? (
+              <>
+                <input
+                  type="text"
+                  value={editedTitle}
+                  onChange={(e) => setEditedTitle(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') handleSaveTitle();
+                    if (e.key === 'Escape') handleCancelEdit();
+                  }}
+                  className="bg-transparent border-none outline-none text-ink-800 dark:text-gray-100 font-semibold w-48"
+                  autoFocus
+                />
+                <button
+                  onClick={handleSaveTitle}
+                  className="p-1 hover:bg-green-100 dark:hover:bg-green-900/20 rounded text-green-600"
+                >
+                  <Check size={16} />
+                </button>
+                <button
+                  onClick={handleCancelEdit}
+                  className="p-1 hover:bg-red-100 dark:hover:bg-red-900/20 rounded text-red-600"
+                >
+                  <X size={16} />
+                </button>
+              </>
+            ) : (
+              <>
+                <h1 className="font-semibold text-ink-800 dark:text-gray-100">{boardTitle}</h1>
+                {onRenameBoard && (
+                  <button
+                    onClick={() => setIsEditingTitle(true)}
+                    className="p-1 hover:bg-gray-100 dark:hover:bg-zinc-700 rounded text-gray-500 hover:text-gray-700"
+                  >
+                    <Edit2 size={14} />
+                  </button>
+                )}
+              </>
+            )}
+          </div>
+        ) : (
+          <>
+            <div className="hidden md:flex items-center space-x-2">
+                <span className="text-orange-500"><Sparkles size={18} fill="currentColor" /></span>
+                <h1 className="font-hand font-bold text-xl text-ink-800 dark:text-gray-100">Lumina Board</h1>
+            </div>
+            <span className="text-xs px-2 py-1 bg-orange-100 text-orange-700 rounded-md font-medium hidden md:block">Beta</span>
+          </>
+        )}
       </div>
 
       {/* Right: Collaboration & Actions */}
