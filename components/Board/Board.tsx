@@ -1,6 +1,6 @@
-import React, { useState, useRef, useEffect } from 'react';
+  import React, { useState, useRef, useEffect } from 'react';
 import { Undo2, Redo2, Check, Settings2, Grid3X3, Circle, LayoutTemplate, Save, CloudCheck } from 'lucide-react';
-import { Shape, ToolType, Point, PathShape, GeoShape, ConnectorShape, StickyShape, TextShape, Theme, User, GeoType, ConnectorType, BackgroundType } from '../../types';
+import { Shape, ToolType, Point, PathShape, GeoShape, ConnectorShape, StickyShape, TextShape, Theme, User, GeoType, ConnectorType, BackgroundType, ResizeHandle } from '../../types';
 import { COLORS } from '../../constants';
 import { useHistory } from '../../hooks/useHistory';
 import { Toast } from '../Common/Toast';
@@ -51,6 +51,7 @@ export const Board: React.FC<BoardProps> = ({ boardId, onBack, onSwitchBoard, th
   
   // Selection & Transform
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [activeResizeHandle, setActiveResizeHandle] = useState<ResizeHandle | null>(null);
   
   // Temp Shapes for Rendering while dragging
   const [currentPoints, setCurrentPoints] = useState<Point[]>([]);
@@ -72,6 +73,7 @@ export const Board: React.FC<BoardProps> = ({ boardId, onBack, onSwitchBoard, th
   const lastMousePos = useRef({ x: 0, y: 0 });
   const startDragPos = useRef({ x: 0, y: 0 });
   const initialShapeState = useRef<Shape | null>(null);
+  const initialRotation = useRef<number>(0);
 
   // --- Helpers ---
   const showToast = (msg: string) => setToast({ msg, visible: true });
@@ -81,6 +83,48 @@ export const Board: React.FC<BoardProps> = ({ boardId, onBack, onSwitchBoard, th
   };
 
   const getShapeById = (id: string) => currentShapes.find(s => s.id === id);
+
+  // Get handle position in world space (accounting for rotation)
+  const getHandlePosition = (shape: GeoShape | StickyShape | TextShape, handle: ResizeHandle, padding: number = 8): Point => {
+    const { x, y, width, height, rotation = 0 } = shape;
+    const center = { x: x + width / 2, y: y + height / 2 };
+    const halfW = width / 2 + padding;
+    const halfH = height / 2 + padding;
+
+    let localPos: Point;
+    switch (handle) {
+      case 'nw': localPos = { x: x - padding, y: y - padding }; break;
+      case 'n': localPos = { x: center.x, y: y - padding }; break;
+      case 'ne': localPos = { x: x + width + padding, y: y - padding }; break;
+      case 'e': localPos = { x: x + width + padding, y: center.y }; break;
+      case 'se': localPos = { x: x + width + padding, y: y + height + padding }; break;
+      case 's': localPos = { x: center.x, y: y + height + padding }; break;
+      case 'sw': localPos = { x: x - padding, y: y + height + padding }; break;
+      case 'w': localPos = { x: x - padding, y: center.y }; break;
+      case 'rotate': localPos = { x: center.x, y: y - padding - 20 }; break;
+      default: localPos = center;
+    }
+
+    // If rotated, transform to world space
+    if (rotation !== 0) {
+      return Geo.rotatePoint(localPos, center, rotation);
+    }
+    return localPos;
+  };
+
+  // Check if a point hits any handle (returns handle type or null)
+  const getHandleAtPoint = (shape: GeoShape | StickyShape | TextShape, point: Point): ResizeHandle | null => {
+    const handleRadius = 8; // Handle hit radius in world space
+    const handles: ResizeHandle[] = ['nw', 'n', 'ne', 'e', 'se', 's', 'sw', 'w', 'rotate'];
+    
+    for (const handle of handles) {
+      const handlePos = getHandlePosition(shape, handle);
+      if (Geo.distance(point, handlePos) <= handleRadius / zoom) {
+        return handle;
+      }
+    }
+    return null;
+  };
 
   // Get cursor style based on tool and state
   const getCursorStyle = () => {
@@ -186,7 +230,30 @@ export const Board: React.FC<BoardProps> = ({ boardId, onBack, onSwitchBoard, th
       return;
     }
 
-    // 3. Hit Test Shapes (Selection)
+    // 3. Handle Hit Detection (check handles before shape body)
+    let clickedHandle: ResizeHandle | null = null;
+    if (activeTool === 'select' && selectedId) {
+      const selectedShape = getShapeById(selectedId);
+      // Only check handles for resizable shapes
+      if (selectedShape && (selectedShape.type === 'geo' || selectedShape.type === 'sticky' || selectedShape.type === 'text')) {
+        clickedHandle = getHandleAtPoint(selectedShape as GeoShape | StickyShape | TextShape, world);
+        if (clickedHandle) {
+          setActiveResizeHandle(clickedHandle);
+          initialShapeState.current = selectedShape;
+          setTempShape(selectedShape);
+          
+          if (clickedHandle === 'rotate') {
+            setInteractionState('rotating');
+            initialRotation.current = (selectedShape as any).rotation || 0;
+          } else {
+            setInteractionState('resizing');
+          }
+          return; // Early return, don't process shape body hit
+        }
+      }
+    }
+
+    // 4. Hit Test Shapes (Selection)
     // We traverse reverse to pick top-most
     let clickedShapeId: string | null = null;
     for (let i = currentShapes.length - 1; i >= 0; i--) {
@@ -201,6 +268,7 @@ export const Board: React.FC<BoardProps> = ({ boardId, onBack, onSwitchBoard, th
         // If clicking a new shape or the same shape
         setSelectedId(clickedShapeId);
         setInteractionState('idle'); 
+        setActiveResizeHandle(null);
         
         // Prepare for potential drag
         const s = getShapeById(clickedShapeId)!;
@@ -208,12 +276,12 @@ export const Board: React.FC<BoardProps> = ({ boardId, onBack, onSwitchBoard, th
         setTempShape(s);
         
         // We set state to dragging immediately if clicked on shape body
-        // Note: resizing logic handles its own mousedown on handles
         setInteractionState('dragging');
 
       } else {
         setSelectedId(null);
         setTempShape(null);
+        setActiveResizeHandle(null);
         setIsPanning(true); // Dragging on canvas pans in select mode
       }
     } 
@@ -324,6 +392,92 @@ export const Board: React.FC<BoardProps> = ({ boardId, onBack, onSwitchBoard, th
           // Note: We can't pushState here as it would add to history on every pixel move
           // Instead, we'll update the visual representation only
        }
+    }
+    else if (interactionState === 'resizing' && selectedId && tempShape && activeResizeHandle && initialShapeState.current) {
+       const initial = initialShapeState.current as GeoShape | StickyShape | TextShape;
+       const { x: initialX, y: initialY, width: initialWidth, height: initialHeight, rotation = 0 } = initial;
+       const center = { x: initialX + initialWidth / 2, y: initialY + initialHeight / 2 };
+       
+       // Transform mouse position to shape's local space (accounting for rotation)
+       const localPoint = rotation !== 0 ? Geo.rotatePoint(world, center, -rotation) : world;
+       
+       let newX = initialX;
+       let newY = initialY;
+       let newWidth = initialWidth;
+       let newHeight = initialHeight;
+       
+       const minSize = 10; // Minimum width/height
+       
+       // Calculate new bounds based on handle type
+       switch (activeResizeHandle) {
+         case 'nw':
+           newWidth = Math.max(minSize, initialX + initialWidth - localPoint.x);
+           newHeight = Math.max(minSize, initialY + initialHeight - localPoint.y);
+           newX = localPoint.x;
+           newY = localPoint.y;
+           break;
+         case 'n':
+           newHeight = Math.max(minSize, initialY + initialHeight - localPoint.y);
+           newY = localPoint.y;
+           break;
+         case 'ne':
+           newWidth = Math.max(minSize, localPoint.x - initialX);
+           newHeight = Math.max(minSize, initialY + initialHeight - localPoint.y);
+           newY = localPoint.y;
+           break;
+         case 'e':
+           newWidth = Math.max(minSize, localPoint.x - initialX);
+           break;
+         case 'se':
+           newWidth = Math.max(minSize, localPoint.x - initialX);
+           newHeight = Math.max(minSize, localPoint.y - initialY);
+           break;
+         case 's':
+           newHeight = Math.max(minSize, localPoint.y - initialY);
+           break;
+         case 'sw':
+           newWidth = Math.max(minSize, initialX + initialWidth - localPoint.x);
+           newHeight = Math.max(minSize, localPoint.y - initialY);
+           newX = localPoint.x;
+           break;
+         case 'w':
+           newWidth = Math.max(minSize, initialX + initialWidth - localPoint.x);
+           newX = localPoint.x;
+           break;
+       }
+       
+       setTempShape({
+         ...tempShape,
+         x: newX,
+         y: newY,
+         width: newWidth,
+         height: newHeight
+       } as Shape);
+    }
+    else if (interactionState === 'rotating' && selectedId && tempShape && initialShapeState.current) {
+       const initial = initialShapeState.current as GeoShape | StickyShape | TextShape;
+       const center = { x: initial.x + initial.width / 2, y: initial.y + initial.height / 2 };
+       
+       // Calculate angle from center to current mouse position
+       const dx = world.x - center.x;
+       const dy = world.y - center.y;
+       const angleRad = Math.atan2(dy, dx);
+       const angleDeg = (angleRad * 180) / Math.PI;
+       
+       // Calculate angle from center to start position for relative rotation
+       const startDx = startDragPos.current.x - center.x;
+       const startDy = startDragPos.current.y - center.y;
+       const startAngleRad = Math.atan2(startDy, startDx);
+       const startAngleDeg = (startAngleRad * 180) / Math.PI;
+       
+       // Relative rotation
+       const rotationDelta = angleDeg - startAngleDeg;
+       const newRotation = initialRotation.current + rotationDelta;
+       
+       setTempShape({
+         ...tempShape,
+         rotation: newRotation
+       } as Shape);
     }
     else if (interactionState === 'connecting' && tempShape) {
        // Check if hovering over a shape for snap preview
@@ -438,11 +592,17 @@ export const Board: React.FC<BoardProps> = ({ boardId, onBack, onSwitchBoard, th
 
        pushState([...currentShapes, finalConn]);
        setActiveTool('select');
+    } else if ((interactionState === 'resizing' || interactionState === 'rotating') && tempShape && selectedId) {
+       // Commit resize/rotate to shape
+       const newShapes = currentShapes.map(s => s.id === selectedId ? tempShape : s);
+       pushState(newShapes);
     }
 
     setInteractionState('idle');
     setTempShape(null);
+    setActiveResizeHandle(null);
     initialShapeState.current = null;
+    initialRotation.current = 0;
   };
 
   const handleWheel = (e: React.WheelEvent) => {
@@ -710,11 +870,21 @@ export const Board: React.FC<BoardProps> = ({ boardId, onBack, onSwitchBoard, th
        <g key={s.id} transform={`rotate(${s.rotation || 0} ${center.x} ${center.y})`}>
           {shape.type === 'geo' && (() => {
              const g = shape as GeoShape;
+             
+             // Apply stroke style (solid, dashed, dotted)
+             let strokeDasharray: string | undefined;
+             if (g.strokeStyle === 'dashed') {
+               strokeDasharray = '8 4';
+             } else if (g.strokeStyle === 'dotted') {
+               strokeDasharray = '2 4';
+             }
+             
              const commonProps = {
                  fill: g.backgroundColor,
                  stroke: g.color,
                  strokeWidth: g.strokeWidth,
-                 opacity: g.opacity
+                 opacity: g.opacity,
+                 strokeDasharray
              };
              
              switch (g.subType) {
@@ -754,6 +924,71 @@ export const Board: React.FC<BoardProps> = ({ boardId, onBack, onSwitchBoard, th
           )}
        </g>
      );
+  };
+
+  // Render resize/rotate handles for selected resizable shapes
+  const renderHandles = (shape: Shape) => {
+    if (!(shape.type === 'geo' || shape.type === 'sticky' || shape.type === 'text')) return null;
+    if (selectedId !== shape.id) return null;
+    if (interactionState === 'drawing' || interactionState === 'connecting') return null;
+    
+    const s = shape as GeoShape | StickyShape | TextShape;
+    const handles: ResizeHandle[] = ['nw', 'n', 'ne', 'e', 'se', 's', 'sw', 'w'];
+    const handleSize = 8 / zoom; // Scale handle size with zoom
+    
+    return (
+      <g key={`handles-${s.id}`}>
+        {/* Resize handles */}
+        {handles.map(handle => {
+          const pos = getHandlePosition(s, handle);
+          const isActive = activeResizeHandle === handle;
+          return (
+            <circle
+              key={handle}
+              cx={pos.x}
+              cy={pos.y}
+              r={handleSize}
+              fill="#6366f1"
+              stroke="white"
+              strokeWidth={1.5 / zoom}
+              style={{ cursor: 'pointer' }}
+              opacity={isActive ? 1 : 0.9}
+            />
+          );
+        })}
+        {/* Rotation handle */}
+        {(() => {
+          const pos = getHandlePosition(s, 'rotate');
+          const isActive = activeResizeHandle === 'rotate';
+          return (
+            <g>
+              {/* Line from center to rotation handle */}
+              <line
+                x1={s.x + s.width / 2}
+                y1={s.y + s.height / 2}
+                x2={pos.x}
+                y2={pos.y}
+                stroke="#6366f1"
+                strokeWidth={1 / zoom}
+                strokeDasharray={`${4 / zoom} ${2 / zoom}`}
+                opacity={0.5}
+              />
+              {/* Rotation handle circle */}
+              <circle
+                cx={pos.x}
+                cy={pos.y}
+                r={handleSize}
+                fill="#6366f1"
+                stroke="white"
+                strokeWidth={1.5 / zoom}
+                style={{ cursor: 'grab' }}
+                opacity={isActive ? 1 : 0.9}
+              />
+            </g>
+          );
+        })()}
+      </g>
+    );
   };
 
   return (
@@ -849,6 +1084,12 @@ export const Board: React.FC<BoardProps> = ({ boardId, onBack, onSwitchBoard, th
                 {activeTool === 'pen' && interactionState === 'drawing' && currentPoints.length > 0 && (
                    <path d={`M ${currentPoints.map(p => `${p.x},${p.y}`).join(' L ')}`} stroke={color} strokeWidth={4} fill="none" strokeLinecap="round" strokeLinejoin="round" />
                 )}
+                {/* Render handles for selected shapes */}
+                {activeTool === 'select' && selectedId && (() => {
+                  // Prioritize tempShape during resize/rotate so handles update smoothly
+                  const selectedShape = (tempShape && tempShape.id === selectedId) ? tempShape : getShapeById(selectedId);
+                  return selectedShape ? renderHandles(selectedShape) : null;
+                })()}
                 {remoteCursors.map(c => <RemoteCursor key={c.id} user={c.user} x={c.x} y={c.y} />)}
              </g>
           </svg>
