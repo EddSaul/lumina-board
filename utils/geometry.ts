@@ -27,7 +27,11 @@ const distanceToSegment = (p: Point, a: Point, b: Point) => {
 
 // Hit Test
 export const isPointInShape = (p: Point, shape: Shape): boolean => {
-  if (shape.type === 'connector') return false; 
+  if (shape.type === 'connector') {
+    const conn = shape as any;
+    const hitRadius = 10; // Larger hit area for easier selection
+    return distanceToSegment(p, conn.startPoint, conn.endPoint) <= hitRadius;
+  } 
 
   if (shape.type === 'pen') {
       const s = shape as any;
@@ -131,66 +135,126 @@ export const getPerimeterPoint = (shape: Shape, from: Point): Point => {
   if (shape.type === 'pen' || shape.type === 'connector') return getShapeCenter(shape);
   const s = shape as any;
   const center = { x: s.x + s.width / 2, y: s.y + s.height / 2 };
-  
-  if (s.subType === 'circle' || s.subType === 'bubble') {
-      const angle = Math.atan2(from.y - center.y, from.x - center.x);
-      const r = s.width / 2; 
-      // Approximate bubble as circle for connectors, or refine later
-      return {
-          x: center.x + r * Math.cos(angle),
-          y: center.y + r * Math.sin(angle)
+
+  // Work in unrotated coordinate space
+  const unrotatedFrom = rotatePoint(from, center, -(s.rotation || 0));
+
+  // Direction from center to target
+  const dx = unrotatedFrom.x - center.x;
+  const dy = unrotatedFrom.y - center.y;
+  const angle = Math.atan2(dy, dx);
+
+  let result: Point;
+
+  if (s.subType === 'circle') {
+      // For circles, simply use angle
+      const rx = s.width / 2;
+      const ry = s.height / 2;
+      result = {
+          x: center.x + rx * Math.cos(angle),
+          y: center.y + ry * Math.sin(angle)
       };
   }
-
-  const unrotatedFrom = rotatePoint(from, center, -(s.rotation || 0));
-  let intersection: Point | null = null;
-
-  if (s.subType === 'triangle') {
-      const p1 = { x: s.x + s.width / 2, y: s.y }; 
-      const p2 = { x: s.x, y: s.y + s.height }; 
-      const p3 = { x: s.x + s.width, y: s.y + s.height }; 
-      intersection = getLineIntersection(center, unrotatedFrom, p1, p2)
-                  || getLineIntersection(center, unrotatedFrom, p2, p3)
-                  || getLineIntersection(center, unrotatedFrom, p3, p1);
-  } 
-  else if (s.subType === 'diamond') {
-      const p1 = { x: s.x + s.width / 2, y: s.y }; 
-      const p2 = { x: s.x + s.width, y: s.y + s.height / 2 };
-      const p3 = { x: s.x + s.width / 2, y: s.y + s.height }; 
-      const p4 = { x: s.x, y: s.y + s.height / 2 };
-      intersection = getLineIntersection(center, unrotatedFrom, p1, p2)
-                  || getLineIntersection(center, unrotatedFrom, p2, p3)
-                  || getLineIntersection(center, unrotatedFrom, p3, p4)
-                  || getLineIntersection(center, unrotatedFrom, p4, p1);
+  else if (s.subType === 'triangle') {
+      const p1 = { x: s.x + s.width / 2, y: s.y };
+      const p2 = { x: s.x, y: s.y + s.height };
+      const p3 = { x: s.x + s.width, y: s.y + s.height };
+      const farPoint = { x: center.x + dx * 1000, y: center.y + dy * 1000 };
+      result = getLineIntersection(center, farPoint, p1, p2)
+            || getLineIntersection(center, farPoint, p2, p3)
+            || getLineIntersection(center, farPoint, p3, p1)
+            || center;
   }
-  else if (s.subType === 'star') {
-      const angle = Math.atan2(unrotatedFrom.y - center.y, unrotatedFrom.x - center.x);
-      const r = s.width / 2; 
-      intersection = {
-          x: center.x + r * Math.cos(angle),
-          y: center.y + r * Math.sin(angle)
+  else if (s.subType === 'diamond') {
+      const p1 = { x: s.x + s.width / 2, y: s.y };
+      const p2 = { x: s.x + s.width, y: s.y + s.height / 2 };
+      const p3 = { x: s.x + s.width / 2, y: s.y + s.height };
+      const p4 = { x: s.x, y: s.y + s.height / 2 };
+      const farPoint = { x: center.x + dx * 1000, y: center.y + dy * 1000 };
+      result = getLineIntersection(center, farPoint, p1, p2)
+            || getLineIntersection(center, farPoint, p2, p3)
+            || getLineIntersection(center, farPoint, p3, p4)
+            || getLineIntersection(center, farPoint, p4, p1)
+            || center;
+  }
+  else if (s.subType === 'star' || s.subType === 'bubble') {
+      // Approximate as ellipse
+      const rx = s.width / 2;
+      const ry = s.height / 2;
+      result = {
+          x: center.x + rx * Math.cos(angle),
+          y: center.y + ry * Math.sin(angle)
       };
   }
   else {
-      const dx = unrotatedFrom.x - center.x;
-      const dy = unrotatedFrom.y - center.y;
-      const w = s.width;
-      const h = s.height;
-      if (w !== 0 && h !== 0) {
+      // Rectangles, sticky notes, text - smooth ray-cast intersection
+      // This creates Excalidraw-like smooth attachment that flows around corners
+      const halfW = s.width / 2;
+      const halfH = s.height / 2;
+
+      // Normalize direction
+      const len = Math.sqrt(dx * dx + dy * dy);
+      if (len === 0) {
+          result = { x: center.x + halfW, y: center.y };
+      } else {
+          const ndx = dx / len;
+          const ndy = dy / len;
+
+          // Find intersection with rectangle edges using parametric ray
+          // Ray: P = center + t * direction, find smallest positive t where ray hits edge
           let t = Infinity;
-          if (dx !== 0) t = Math.min(t, (Math.sign(dx) * w / 2) / dx);
-          if (dy !== 0) t = Math.min(t, (Math.sign(dy) * h / 2) / dy);
-          intersection = { x: center.x + dx * t, y: center.y + dy * t };
+
+          // Right edge (x = center.x + halfW)
+          if (ndx > 0) {
+              const tRight = halfW / ndx;
+              const yAtRight = ndy * tRight;
+              if (Math.abs(yAtRight) <= halfH) t = Math.min(t, tRight);
+          }
+          // Left edge (x = center.x - halfW)
+          if (ndx < 0) {
+              const tLeft = -halfW / ndx;
+              const yAtLeft = ndy * tLeft;
+              if (Math.abs(yAtLeft) <= halfH) t = Math.min(t, tLeft);
+          }
+          // Bottom edge (y = center.y + halfH)
+          if (ndy > 0) {
+              const tBottom = halfH / ndy;
+              const xAtBottom = ndx * tBottom;
+              if (Math.abs(xAtBottom) <= halfW) t = Math.min(t, tBottom);
+          }
+          // Top edge (y = center.y - halfH)
+          if (ndy < 0) {
+              const tTop = -halfH / ndy;
+              const xAtTop = ndx * tTop;
+              if (Math.abs(xAtTop) <= halfW) t = Math.min(t, tTop);
+          }
+
+          if (t === Infinity) t = 0;
+          result = {
+              x: center.x + ndx * t,
+              y: center.y + ndy * t
+          };
       }
   }
 
-  if (!intersection) return center;
-  return rotatePoint(intersection, center, (s.rotation || 0));
+  // Rotate result back to world space
+  return rotatePoint(result, center, s.rotation || 0);
 };
 
 export const getElbowPoints = (start: Point, end: Point): Point[] => {
-  const midX = start.x + (end.x - start.x) / 2;
-  return [start, { x: midX, y: start.y }, { x: midX, y: end.y }, end];
+  const dx = end.x - start.x;
+  const dy = end.y - start.y;
+
+  // Simple orthogonal routing with one bend
+  // If horizontal distance is larger, go horizontal first
+  if (Math.abs(dx) > Math.abs(dy)) {
+    const midX = start.x + dx / 2;
+    return [start, { x: midX, y: start.y }, { x: midX, y: end.y }, end];
+  } else {
+    // Otherwise go vertical first
+    const midY = start.y + dy / 2;
+    return [start, { x: start.x, y: midY }, { x: end.x, y: midY }, end];
+  }
 };
 
 export const screenToWorld = (x: number, y: number, pan: Point, zoom: number, svgRef: React.RefObject<SVGSVGElement>): Point => {

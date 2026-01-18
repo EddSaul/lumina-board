@@ -115,7 +115,22 @@ export const Board: React.FC<BoardProps> = ({ boardId, onBack, onSwitchBoard, th
 
   const handleDelete = () => {
     if (selectedId) {
-      pushState(currentShapes.filter(s => s.id !== selectedId));
+      // Also remove any connectors that are bound to this shape
+      const newShapes = currentShapes.filter(s => {
+        if (s.id === selectedId) return false;
+
+        // Remove connectors that are bound to the deleted shape
+        if (s.type === 'connector') {
+          const conn = s as ConnectorShape;
+          if (conn.startBindingId === selectedId || conn.endBindingId === selectedId) {
+            return false; // Remove this connector too
+          }
+        }
+
+        return true;
+      });
+
+      pushState(newShapes);
       setSelectedId(null);
       setTempShape(null);
       showToast('Item deleted');
@@ -298,26 +313,49 @@ export const Board: React.FC<BoardProps> = ({ boardId, onBack, onSwitchBoard, th
        const dy = world.y - startDragPos.current.y;
        if (initialShapeState.current) {
           const s = initialShapeState.current as any;
-          setTempShape({
+          const updatedShape = {
              ...tempShape,
              x: s.x + dx,
              y: s.y + dy
-          } as Shape);
+          } as Shape;
+          setTempShape(updatedShape);
+
+          // Also update any connectors bound to this shape in real-time
+          // Note: We can't pushState here as it would add to history on every pixel move
+          // Instead, we'll update the visual representation only
        }
     }
     else if (interactionState === 'connecting' && tempShape) {
+       // Check if hovering over a shape for snap preview
+       let hoverShapeId: string | undefined = undefined;
+       for (let i = currentShapes.length - 1; i >= 0; i--) {
+         if (Geo.isPointInShape(world, currentShapes[i])) {
+           hoverShapeId = currentShapes[i].id;
+           break;
+         }
+       }
+
+       let endPoint = world;
+       if (hoverShapeId) {
+         const hoverShape = currentShapes.find(s => s.id === hoverShapeId);
+         if (hoverShape) {
+           const conn = tempShape as ConnectorShape;
+           endPoint = Geo.getPerimeterPoint(hoverShape, conn.startPoint);
+         }
+       }
+
        setTempShape({
           ...tempShape,
-          endPoint: world
+          endPoint
        } as ConnectorShape);
     }
     
     lastMousePos.current = screen;
   };
 
-  const handlePointerUp = () => {
+  const handlePointerUp = (e?: React.MouseEvent | React.TouchEvent) => {
     setIsPanning(false);
-    
+
     if (interactionState === 'drawing') {
        if (activeTool === 'pen') {
           if (currentPoints.length > 1) {
@@ -340,10 +378,65 @@ export const Board: React.FC<BoardProps> = ({ boardId, onBack, onSwitchBoard, th
           }
        }
     } else if (interactionState === 'dragging' && tempShape && selectedId) {
-       const newShapes = currentShapes.map(s => s.id === selectedId ? tempShape : s);
+       // Update connectors that are bound to the dragged shape
+       const newShapes = currentShapes.map(s => {
+         if (s.id === selectedId) return tempShape;
+
+         // Update connectors bound to this shape
+         if (s.type === 'connector') {
+           const conn = s as ConnectorShape;
+           let updated = false;
+           let newConn = { ...conn };
+
+           if (conn.startBindingId === selectedId) {
+             newConn.startPoint = Geo.getPerimeterPoint(tempShape, conn.endPoint);
+             updated = true;
+           }
+           if (conn.endBindingId === selectedId) {
+             newConn.endPoint = Geo.getPerimeterPoint(tempShape, conn.startPoint);
+             updated = true;
+           }
+
+           return updated ? newConn : s;
+         }
+
+         return s;
+       });
        pushState(newShapes);
-    } else if (interactionState === 'connecting' && tempShape) {
-       pushState([...currentShapes, tempShape]);
+    } else if (interactionState === 'connecting' && tempShape && e) {
+       // Check if we're ending on a shape
+       const screen = 'touches' in e ? { x: e.changedTouches[0].clientX, y: e.changedTouches[0].clientY } : { x: (e as React.MouseEvent).clientX, y: (e as React.MouseEvent).clientY };
+       const world = Geo.screenToWorld(screen.x, screen.y, pan, zoom, svgRef);
+
+       let endShapeId: string | undefined = undefined;
+       for (let i = currentShapes.length - 1; i >= 0; i--) {
+         if (Geo.isPointInShape(world, currentShapes[i])) {
+           endShapeId = currentShapes[i].id;
+           break;
+         }
+       }
+
+       // Update connector with end binding and snap to perimeter
+       const conn = tempShape as ConnectorShape;
+       const finalConn = { ...conn, id: Date.now().toString() };
+
+       if (endShapeId) {
+         finalConn.endBindingId = endShapeId;
+         const endShape = currentShapes.find(s => s.id === endShapeId);
+         if (endShape) {
+           finalConn.endPoint = Geo.getPerimeterPoint(endShape, conn.startPoint);
+         }
+       }
+
+       // Also snap start point if bound
+       if (conn.startBindingId) {
+         const startShape = currentShapes.find(s => s.id === conn.startBindingId);
+         if (startShape) {
+           finalConn.startPoint = Geo.getPerimeterPoint(startShape, finalConn.endPoint);
+         }
+       }
+
+       pushState([...currentShapes, finalConn]);
        setActiveTool('select');
     }
 
@@ -501,17 +594,113 @@ export const Board: React.FC<BoardProps> = ({ boardId, onBack, onSwitchBoard, th
      
      if (shape.type === 'connector') {
         const s = shape as ConnectorShape;
-        let d = `M ${s.startPoint.x},${s.startPoint.y} L ${s.endPoint.x},${s.endPoint.y}`;
+
+        // Compute actual endpoints based on bindings
+        let startPoint = s.startPoint;
+        let endPoint = s.endPoint;
+
+        // If dragging a bound shape, use tempShape
+        const getShape = (id: string) => {
+          if (tempShape && tempShape.id === id) return tempShape;
+          return currentShapes.find(sh => sh.id === id);
+        };
+
+        if (s.startBindingId) {
+          const startShape = getShape(s.startBindingId);
+          if (startShape) {
+            startPoint = Geo.getPerimeterPoint(startShape, endPoint);
+          }
+        }
+
+        if (s.endBindingId) {
+          const endShape = getShape(s.endBindingId);
+          if (endShape) {
+            endPoint = Geo.getPerimeterPoint(endShape, startPoint);
+          }
+        }
+
+        // Re-compute start if both are bound (for accuracy)
+        if (s.startBindingId) {
+          const startShape = getShape(s.startBindingId);
+          if (startShape) {
+            startPoint = Geo.getPerimeterPoint(startShape, endPoint);
+          }
+        }
+
+        let d = `M ${startPoint.x},${startPoint.y} L ${endPoint.x},${endPoint.y}`;
         if (s.subType === 'curved') {
-           const c1 = {x: (s.startPoint.x + s.endPoint.x)/2, y: s.startPoint.y};
-           const c2 = {x: (s.startPoint.x + s.endPoint.x)/2, y: s.endPoint.y};
-           d = `M ${s.startPoint.x},${s.startPoint.y} C ${c1.x},${c1.y} ${c2.x},${c2.y} ${s.endPoint.x},${s.endPoint.y}`;
+           // Calculate distance between endpoints for proportional curvature
+           const connectorLength = Math.sqrt(
+             Math.pow(endPoint.x - startPoint.x, 2) + Math.pow(endPoint.y - startPoint.y, 2)
+           );
+
+           // Calculate control points that extend outward from shape centers (Excalidraw-style)
+           const getControlPoint = (point: Point, shape: Shape | undefined, otherPoint: Point): Point => {
+             // More pronounced curvature: minimum 80px, scales with distance
+             const offsetDist = Math.max(80, connectorLength * 0.4);
+
+             if (shape) {
+               const shapeData = shape as any;
+               if (shapeData.x !== undefined && shapeData.width) {
+                 const center = {
+                   x: shapeData.x + shapeData.width / 2,
+                   y: shapeData.y + shapeData.height / 2
+                 };
+
+                 // Direction from shape center outward through attachment point
+                 const dx = point.x - center.x;
+                 const dy = point.y - center.y;
+                 const len = Math.sqrt(dx * dx + dy * dy);
+
+                 if (len > 0) {
+                   // Extend in the direction away from the shape center
+                   return {
+                     x: point.x + (dx / len) * offsetDist,
+                     y: point.y + (dy / len) * offsetDist
+                   };
+                 }
+               }
+             }
+
+             // Fallback: extend towards the other point
+             const dx = otherPoint.x - point.x;
+             const dy = otherPoint.y - point.y;
+             const len = Math.sqrt(dx * dx + dy * dy);
+             if (len > 0) {
+               return {
+                 x: point.x + (dx / len) * offsetDist,
+                 y: point.y + (dy / len) * offsetDist
+               };
+             }
+
+             return point;
+           };
+
+           const startShape = s.startBindingId ? getShape(s.startBindingId) : undefined;
+           const endShape = s.endBindingId ? getShape(s.endBindingId) : undefined;
+
+           const c1 = getControlPoint(startPoint, startShape, endPoint);
+           const c2 = getControlPoint(endPoint, endShape, startPoint);
+
+           d = `M ${startPoint.x},${startPoint.y} C ${c1.x},${c1.y} ${c2.x},${c2.y} ${endPoint.x},${endPoint.y}`;
         } else if (s.subType === 'elbow') {
-           const points = Geo.getElbowPoints(s.startPoint, s.endPoint);
+           const points = Geo.getElbowPoints(startPoint, endPoint);
            d = `M ${points.map(p => `${p.x},${p.y}`).join(' L ')}`;
         }
 
-        return <path key={s.id} d={d} stroke={s.color} strokeWidth={2} fill="none" markerEnd={s.endArrowhead ? `url(#arrow-${s.id})` : undefined} opacity={s.opacity} />;
+        // Add visual selection indicator
+        const strokeWidth = isSelected ? 3 : 2;
+        const strokeColor = isSelected ? '#6366f1' : s.color;
+
+        // Apply stroke style (solid, dashed, dotted)
+        let strokeDasharray: string | undefined;
+        if (s.strokeStyle === 'dashed') {
+          strokeDasharray = '8 4';
+        } else if (s.strokeStyle === 'dotted') {
+          strokeDasharray = '2 4';
+        }
+
+        return <path key={s.id} d={d} stroke={strokeColor} strokeWidth={strokeWidth} strokeDasharray={strokeDasharray} fill="none" markerEnd={s.endArrowhead ? `url(#arrow-${s.id})` : undefined} opacity={s.opacity} strokeLinecap="round" />;
      }
 
      const s = shape as GeoShape | StickyShape | TextShape;
