@@ -482,7 +482,7 @@ export const shareOperations = {
     // First, get the share to check if it's unclaimed or already claimed by this user
     const { data: existingShare, error: fetchError } = await supabase
       .from('board_shares')
-      .select('*, boards(*)')
+      .select('*')
       .eq('share_token', token)
       .single();
 
@@ -494,17 +494,37 @@ export const shareOperations = {
       throw fetchError;
     }
 
+    // Fetch the board data separately to ensure we always have it
+    const { data: board, error: boardError } = await supabase
+      .from('boards')
+      .select('*')
+      .eq('id', existingShare.board_id)
+      .single();
+
+    if (boardError || !board) {
+      console.error('Error fetching board for share:', boardError);
+      return null;
+    }
+
+    // Check if user is the board owner - they don't need to claim, just redirect
+    if (board.user_id === user.user.id) {
+      return {
+        ...existingShare,
+        board: board,
+        permission: 'edit' as const, // Owner has full access
+      };
+    }
+
     // If already claimed by this user, return it
     if (existingShare.shared_with_user_id === user.user.id) {
       return {
         ...existingShare,
-        board: existingShare.boards as Board,
+        board: board,
       };
     }
 
-    // If already claimed by someone else, check if board owner is sharing
+    // If already claimed by someone else, create a new share for this user
     if (existingShare.shared_with_user_id !== null) {
-      // Create a new share for this user with the same permission
       const newShareToken = generateShareToken();
       const { data: newShare, error: createError } = await supabase
         .from('board_shares')
@@ -515,7 +535,7 @@ export const shareOperations = {
           created_by: existingShare.created_by,
           shared_with_user_id: user.user.id,
         })
-        .select('*, boards(*)')
+        .select('*')
         .single();
 
       if (createError) {
@@ -523,7 +543,7 @@ export const shareOperations = {
         if (createError.code === '23505') {
           const { data: userShare } = await supabase
             .from('board_shares')
-            .select('*, boards(*)')
+            .select('*')
             .eq('board_id', existingShare.board_id)
             .eq('shared_with_user_id', user.user.id)
             .single();
@@ -531,7 +551,7 @@ export const shareOperations = {
           if (userShare) {
             return {
               ...userShare,
-              board: userShare.boards as Board,
+              board: board,
             };
           }
         }
@@ -541,7 +561,7 @@ export const shareOperations = {
 
       return newShare ? {
         ...newShare,
-        board: newShare.boards as Board,
+        board: board,
       } : null;
     }
 
@@ -551,18 +571,61 @@ export const shareOperations = {
       .update({ shared_with_user_id: user.user.id })
       .eq('share_token', token)
       .is('shared_with_user_id', null) // Only update if still unclaimed
-      .select('*, boards(*)')
-      .single();
+      .select('*')
+      .maybeSingle();
 
     if (error) {
       console.error('Error claiming share:', error);
       throw error;
     }
 
-    return data ? {
+    // If no rows were updated (race condition - someone else claimed it),
+    // create a new share for this user
+    if (!data) {
+      const newShareToken = generateShareToken();
+      const { data: newShare, error: createError } = await supabase
+        .from('board_shares')
+        .insert({
+          board_id: existingShare.board_id,
+          share_token: newShareToken,
+          permission: existingShare.permission,
+          created_by: existingShare.created_by,
+          shared_with_user_id: user.user.id,
+        })
+        .select('*')
+        .maybeSingle();
+
+      if (createError) {
+        // If unique constraint violation, user already has access - fetch it
+        if (createError.code === '23505') {
+          const { data: userShare } = await supabase
+            .from('board_shares')
+            .select('*')
+            .eq('board_id', existingShare.board_id)
+            .eq('shared_with_user_id', user.user.id)
+            .single();
+
+          if (userShare) {
+            return {
+              ...userShare,
+              board: board,
+            };
+          }
+        }
+        console.error('Error creating share for user:', createError);
+        throw createError;
+      }
+
+      return newShare ? {
+        ...newShare,
+        board: board,
+      } : null;
+    }
+
+    return {
       ...data,
-      board: data.boards as Board,
-    } : null;
+      board: board,
+    };
   },
 
   /**

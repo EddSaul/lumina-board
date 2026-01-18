@@ -241,9 +241,12 @@ export const Dashboard: React.FC<DashboardProps> = ({ onOpenBoard, theme, toggle
                      onMouseEnter={() => setHoveredFolder(folder.id)}
                      onMouseLeave={() => setHoveredFolder(null)}
                    >
-                     <button
+                     <div
                        onClick={() => setActiveFolder(folder.id)}
-                       className={`w-full flex items-center space-x-3 px-3 py-2 rounded-lg text-sm font-medium transition-colors ${
+                       role="button"
+                       tabIndex={0}
+                       onKeyDown={(e) => e.key === 'Enter' && setActiveFolder(folder.id)}
+                       className={`w-full flex items-center space-x-3 px-3 py-2 rounded-lg text-sm font-medium transition-colors cursor-pointer ${
                           isActive
                           ? 'bg-orange-50 text-orange-700 dark:bg-orange-900/20 dark:text-orange-200'
                           : 'text-gray-500 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-zinc-800'
@@ -263,7 +266,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ onOpenBoard, theme, toggle
                            <Trash2 size={14} />
                          </button>
                        )}
-                     </button>
+                     </div>
                    </div>
                  );
                })}
