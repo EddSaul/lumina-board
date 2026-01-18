@@ -44,9 +44,15 @@ export const folderOperations = {
    * Get all folders for the current user
    */
   async getFolders(): Promise<Folder[]> {
+    const { data: user } = await supabase.auth.getUser();
+    if (!user.user) {
+      throw new Error('User not authenticated');
+    }
+
     const { data, error } = await supabase
       .from('folders')
       .select('*')
+      .eq('user_id', user.user.id)
       .order('position', { ascending: true });
 
     if (error) {
@@ -61,19 +67,20 @@ export const folderOperations = {
    * Create a new folder
    */
   async createFolder(name: string, icon: string = 'Folder'): Promise<Folder> {
-    // Get the highest position to add the new folder at the end
-    const { data: folders } = await supabase
-      .from('folders')
-      .select('position')
-      .order('position', { ascending: false })
-      .limit(1);
-
-    const nextPosition = folders && folders.length > 0 ? folders[0].position + 1 : 0;
-
     const { data: user } = await supabase.auth.getUser();
     if (!user.user) {
       throw new Error('User not authenticated');
     }
+
+    // Get the highest position to add the new folder at the end (for this user only)
+    const { data: folders } = await supabase
+      .from('folders')
+      .select('position')
+      .eq('user_id', user.user.id)
+      .order('position', { ascending: false })
+      .limit(1);
+
+    const nextPosition = folders && folders.length > 0 ? folders[0].position + 1 : 0;
 
     const { data, error } = await supabase
       .from('folders')
@@ -135,9 +142,15 @@ export const boardOperations = {
    * Get all boards for the current user
    */
   async getBoards(): Promise<Board[]> {
+    const { data: user } = await supabase.auth.getUser();
+    if (!user.user) {
+      throw new Error('User not authenticated');
+    }
+
     const { data, error } = await supabase
       .from('boards')
       .select('*')
+      .eq('user_id', user.user.id)
       .order('last_accessed_at', { ascending: false });
 
     if (error) {
