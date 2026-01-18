@@ -1,8 +1,7 @@
 import React, { useState } from 'react';
-import { Menu, Share2, LogOut, Sparkles, Edit2, Check, X } from 'lucide-react';
+import { Menu, Share2, LogOut, Sparkles, Edit2, Check, X, Eye, Edit3, User as UserIcon } from 'lucide-react';
 import { ThemeToggle } from '../Common/ThemeToggle';
-import { MOCK_USERS } from '../../constants';
-import { Theme } from '../../types';
+import { Theme, User } from '../../types';
 
 interface TopBarProps {
   onMenuClick: () => void;
@@ -14,6 +13,10 @@ interface TopBarProps {
   onLogout: () => void;
   boardTitle?: string;
   onRenameBoard?: (newTitle: string) => void;
+  isSharedView?: boolean;
+  permission?: 'view' | 'edit' | 'owner';
+  currentUser?: User | null;
+  collaborators?: User[];
 }
 
 export const TopBar: React.FC<TopBarProps> = ({
@@ -25,8 +28,19 @@ export const TopBar: React.FC<TopBarProps> = ({
   toggleTheme,
   onLogout,
   boardTitle,
-  onRenameBoard
+  onRenameBoard,
+  isSharedView = false,
+  permission = 'owner',
+  currentUser,
+  collaborators = []
 }) => {
+  const isOwner = permission === 'owner';
+  const isReadOnly = permission === 'view';
+
+  // Combine current user with collaborators for display
+  const allUsers = currentUser
+    ? [currentUser, ...collaborators.filter(c => c.id !== currentUser.id)]
+    : collaborators;
   const [isEditingTitle, setIsEditingTitle] = useState(false);
   const [editedTitle, setEditedTitle] = useState(boardTitle || 'Untitled Board');
 
@@ -110,43 +124,100 @@ export const TopBar: React.FC<TopBarProps> = ({
       {/* Right: Collaboration & Actions */}
       <div className="flex items-center space-x-3 pointer-events-auto">
         {/* Avatar Stack */}
-        <div 
-            className="flex -space-x-2 mr-4 cursor-pointer relative" 
-            onClick={() => setCollaboratorsOpen(!collaboratorsOpen)}
-        >
-            {MOCK_USERS.map(user => (
-              <img 
-              key={user.id} 
-              src={user.avatar} 
-              alt={user.name} 
-              className="w-8 h-8 rounded-full border-2 border-white dark:border-zinc-800 transition-transform hover:scale-110 hover:z-10"
-              title={user.name}
-              />
-            ))}
-            <button className="w-8 h-8 rounded-full bg-gray-100 dark:bg-zinc-700 flex items-center justify-center text-xs text-gray-500 border-2 border-white dark:border-zinc-800 font-medium hover:bg-gray-200">
-              +3
-            </button>
-            
-            {/* Simple list of active users popup */}
-            {collaboratorsOpen && (
-              <div className="absolute top-10 right-0 bg-white dark:bg-zinc-800 p-3 rounded-xl shadow-xl border border-gray-200 dark:border-zinc-700 w-48 z-30 animate-fade-in-up">
-                <h4 className="text-xs font-bold text-gray-400 uppercase mb-2">Active Now</h4>
-                {MOCK_USERS.map(u => (
-                  <div key={u.id} className="flex items-center space-x-2 mb-2 last:mb-0">
-                      <span className="w-2 h-2 rounded-full" style={{backgroundColor: u.color}}></span>
-                      <span className="text-sm text-gray-700 dark:text-gray-200">{u.name}</span>
+        {allUsers.length > 0 && (
+          <div
+              className="flex -space-x-2 mr-4 cursor-pointer relative"
+              onClick={() => setCollaboratorsOpen(!collaboratorsOpen)}
+          >
+              {allUsers.slice(0, 4).map((user, index) => (
+                user.avatar ? (
+                  <img
+                    key={user.id}
+                    src={user.avatar}
+                    alt={user.name}
+                    className="w-8 h-8 rounded-full border-2 border-white dark:border-zinc-800 transition-transform hover:scale-110 hover:z-10 object-cover"
+                    style={{ zIndex: allUsers.length - index }}
+                    title={`${user.name}${index === 0 && currentUser?.id === user.id ? ' (You)' : ''}`}
+                  />
+                ) : (
+                  <div
+                    key={user.id}
+                    className="w-8 h-8 rounded-full border-2 border-white dark:border-zinc-800 transition-transform hover:scale-110 hover:z-10 flex items-center justify-center text-white text-xs font-bold"
+                    style={{ backgroundColor: user.color, zIndex: allUsers.length - index }}
+                    title={`${user.name}${index === 0 && currentUser?.id === user.id ? ' (You)' : ''}`}
+                  >
+                    {user.name.charAt(0).toUpperCase()}
                   </div>
-                ))}
-              </div>
-            )}
-        </div>
+                )
+              ))}
+              {allUsers.length > 4 && (
+                <button className="w-8 h-8 rounded-full bg-gray-100 dark:bg-zinc-700 flex items-center justify-center text-xs text-gray-500 border-2 border-white dark:border-zinc-800 font-medium hover:bg-gray-200">
+                  +{allUsers.length - 4}
+                </button>
+              )}
 
-        <button 
-            onClick={onShare}
-            className="bg-orange-500 hover:bg-orange-600 text-white px-4 py-2 rounded-lg text-sm font-medium flex items-center shadow-md transition-all active:scale-95"
-        >
-          <Share2 size={16} className="mr-2" /> Share
-        </button>
+              {/* Simple list of active users popup */}
+              {collaboratorsOpen && (
+                <div className="absolute top-10 right-0 bg-white dark:bg-zinc-800 p-3 rounded-xl shadow-xl border border-gray-200 dark:border-zinc-700 w-56 z-30 animate-fade-in-up">
+                  <h4 className="text-xs font-bold text-gray-400 uppercase mb-2">
+                    Active Now ({allUsers.length})
+                  </h4>
+                  {allUsers.map((u, index) => (
+                    <div key={u.id} className="flex items-center space-x-2 mb-2 last:mb-0">
+                        <span className="w-2 h-2 rounded-full flex-shrink-0" style={{backgroundColor: u.color}}></span>
+                        {u.avatar ? (
+                          <img src={u.avatar} alt={u.name} className="w-5 h-5 rounded-full object-cover" />
+                        ) : (
+                          <div
+                            className="w-5 h-5 rounded-full flex items-center justify-center text-white text-[10px] font-bold"
+                            style={{ backgroundColor: u.color }}
+                          >
+                            {u.name.charAt(0).toUpperCase()}
+                          </div>
+                        )}
+                        <span className="text-sm text-gray-700 dark:text-gray-200 truncate">
+                          {u.name}
+                          {index === 0 && currentUser?.id === u.id && (
+                            <span className="text-xs text-gray-400 ml-1">(You)</span>
+                          )}
+                        </span>
+                    </div>
+                  ))}
+                </div>
+              )}
+          </div>
+        )}
+
+        {/* Permission badge for shared boards */}
+        {isSharedView && (
+          <div className={`px-3 py-1.5 rounded-lg text-xs font-medium flex items-center ${
+            isReadOnly
+              ? 'bg-amber-100 dark:bg-amber-900/30 text-amber-700 dark:text-amber-300'
+              : 'bg-blue-100 dark:bg-blue-900/30 text-blue-700 dark:text-blue-300'
+          }`}>
+            {isReadOnly ? (
+              <>
+                <Eye size={14} className="mr-1.5" />
+                View Only
+              </>
+            ) : (
+              <>
+                <Edit3 size={14} className="mr-1.5" />
+                Can Edit
+              </>
+            )}
+          </div>
+        )}
+
+        {/* Share button - only shown for board owners */}
+        {isOwner && (
+          <button
+              onClick={onShare}
+              className="bg-orange-500 hover:bg-orange-600 text-white px-4 py-2 rounded-lg text-sm font-medium flex items-center shadow-md transition-all active:scale-95"
+          >
+            <Share2 size={16} className="mr-2" /> Share
+          </button>
+        )}
         
         <div className="h-6 w-px bg-gray-300 dark:bg-zinc-600 mx-2"></div>
         

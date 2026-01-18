@@ -1,9 +1,9 @@
 import React, { useState, useEffect } from 'react';
-import { Sparkles, Folder, Plus, Search, MoreVertical, LayoutGrid, Clock, Star, Settings, LogOut, Trash2, Briefcase, Heart, Archive, FileText, Database, Package, Code } from 'lucide-react';
+import { Sparkles, Folder, Plus, Search, MoreVertical, LayoutGrid, Clock, Star, Settings, LogOut, Trash2, Briefcase, Heart, Archive, FileText, Database, Package, Code, Users, Eye, Edit3 } from 'lucide-react';
 import { ThemeToggle } from '../Common/ThemeToggle';
 import { Theme } from '../../types';
 import { useAuth } from '../../contexts/AuthContext';
-import { folderOperations, boardOperations, Folder as FolderType, Board as BoardType } from '../../lib/database';
+import { folderOperations, boardOperations, shareOperations, Folder as FolderType, Board as BoardType, BoardShare } from '../../lib/database';
 import CreateFolderModal from './CreateFolderModal';
 
 interface DashboardProps {
@@ -32,6 +32,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ onOpenBoard, theme, toggle
   // State for database data
   const [folders, setFolders] = useState<FolderType[]>([]);
   const [boards, setBoards] = useState<BoardType[]>([]);
+  const [sharedBoards, setSharedBoards] = useState<(BoardShare & { board: BoardType })[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
@@ -50,6 +51,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ onOpenBoard, theme, toggle
     { id: 'all', name: 'All Boards', icon: LayoutGrid },
     { id: 'recent', name: 'Recent', icon: Clock },
     { id: 'favorites', name: 'Favorites', icon: Star },
+    { id: 'shared', name: 'Shared with me', icon: Users },
   ];
 
   // Load data on mount
@@ -61,12 +63,14 @@ export const Dashboard: React.FC<DashboardProps> = ({ onOpenBoard, theme, toggle
     try {
       setLoading(true);
       setError(null);
-      const [foldersData, boardsData] = await Promise.all([
+      const [foldersData, boardsData, sharedData] = await Promise.all([
         folderOperations.getFolders(),
         boardOperations.getBoards(),
+        shareOperations.getSharedWithMe(),
       ]);
       setFolders(foldersData);
       setBoards(boardsData);
+      setSharedBoards(sharedData);
     } catch (err) {
       console.error('Error loading data:', err);
       setError(err instanceof Error ? err.message : 'Failed to load data');
@@ -134,7 +138,18 @@ export const Dashboard: React.FC<DashboardProps> = ({ onOpenBoard, theme, toggle
   };
 
   // Get filtered boards
-  const getFilteredBoards = () => {
+  const getFilteredBoards = (): { boards: BoardType[]; isSharedView: boolean } => {
+    // Special case for shared folder
+    if (activeFolder === 'shared') {
+      let filtered = sharedBoards.map(s => s.board).filter(Boolean);
+      if (searchQuery.trim()) {
+        filtered = filtered.filter(b =>
+          b.title.toLowerCase().includes(searchQuery.toLowerCase())
+        );
+      }
+      return { boards: filtered, isSharedView: true };
+    }
+
     let filtered = boards;
 
     // Filter by active folder
@@ -159,10 +174,16 @@ export const Dashboard: React.FC<DashboardProps> = ({ onOpenBoard, theme, toggle
       );
     }
 
-    return filtered;
+    return { boards: filtered, isSharedView: false };
   };
 
-  const filteredBoards = getFilteredBoards();
+  const { boards: filteredBoards, isSharedView } = getFilteredBoards();
+
+  // Get permission for a shared board
+  const getSharedBoardPermission = (boardId: string) => {
+    const share = sharedBoards.find(s => s.board_id === boardId);
+    return share?.permission || 'view';
+  };
 
   return (
     <div className="min-h-screen bg-cream-50 dark:bg-zinc-950 text-ink-800 dark:text-gray-200 flex transition-colors duration-300">
@@ -329,42 +350,79 @@ export const Dashboard: React.FC<DashboardProps> = ({ onOpenBoard, theme, toggle
                </div>
             ) : (
                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6">
-                  {/* Create New Card */}
-                  <button
-                     onClick={() => handleCreateBoard(activeFolder !== 'all' && activeFolder !== 'recent' && activeFolder !== 'favorites' ? activeFolder : undefined)}
-                     className="aspect-[4/3] rounded-2xl border-2 border-dashed border-gray-300 dark:border-zinc-700 flex flex-col items-center justify-center text-gray-400 hover:text-orange-500 hover:border-orange-300 hover:bg-orange-50/50 dark:hover:bg-orange-900/10 transition-all group"
-                  >
-                     <div className="w-12 h-12 rounded-full bg-gray-100 dark:bg-zinc-800 flex items-center justify-center mb-3 group-hover:bg-orange-100 dark:group-hover:bg-orange-900/50 transition-colors">
-                        <Plus size={24} />
-                     </div>
-                     <span className="font-medium">Create New Board</span>
-                  </button>
+                  {/* Create New Card - only show for non-shared folders */}
+                  {!isSharedView && (
+                    <button
+                       onClick={() => handleCreateBoard(activeFolder !== 'all' && activeFolder !== 'recent' && activeFolder !== 'favorites' ? activeFolder : undefined)}
+                       className="aspect-[4/3] rounded-2xl border-2 border-dashed border-gray-300 dark:border-zinc-700 flex flex-col items-center justify-center text-gray-400 hover:text-orange-500 hover:border-orange-300 hover:bg-orange-50/50 dark:hover:bg-orange-900/10 transition-all group"
+                    >
+                       <div className="w-12 h-12 rounded-full bg-gray-100 dark:bg-zinc-800 flex items-center justify-center mb-3 group-hover:bg-orange-100 dark:group-hover:bg-orange-900/50 transition-colors">
+                          <Plus size={24} />
+                       </div>
+                       <span className="font-medium">Create New Board</span>
+                    </button>
+                  )}
 
                   {/* Board Cards */}
                   {filteredBoards.length === 0 && (
                      <div className="col-span-full flex flex-col items-center justify-center py-16 text-gray-400">
-                        <LayoutGrid size={48} className="mb-4 opacity-50" />
-                        <p className="text-lg font-medium mb-2">No boards yet</p>
-                        <p className="text-sm">Create your first board to get started</p>
+                        {isSharedView ? (
+                          <>
+                            <Users size={48} className="mb-4 opacity-50" />
+                            <p className="text-lg font-medium mb-2">No shared boards</p>
+                            <p className="text-sm">Boards shared with you will appear here</p>
+                          </>
+                        ) : (
+                          <>
+                            <LayoutGrid size={48} className="mb-4 opacity-50" />
+                            <p className="text-lg font-medium mb-2">No boards yet</p>
+                            <p className="text-sm">Create your first board to get started</p>
+                          </>
+                        )}
                      </div>
                   )}
 
-                  {filteredBoards.map(board => (
+                  {filteredBoards.map(board => {
+                    const boardPermission = isSharedView ? getSharedBoardPermission(board.id) : 'owner';
+                    return (
                      <div
                        key={board.id}
                        onClick={() => onOpenBoard(board.id)}
                        className="group relative aspect-[4/3] bg-white dark:bg-zinc-800 rounded-2xl shadow-sm hover:shadow-xl transition-all border border-gray-100 dark:border-zinc-700 overflow-hidden cursor-pointer"
                      >
-                        {/* Favorite star */}
-                        <button
-                          onClick={(e) => handleToggleFavorite(board.id, board.is_favorite, e)}
-                          className="absolute top-3 right-3 z-10 p-1.5 rounded-full bg-white/80 dark:bg-zinc-800/80 backdrop-blur-sm hover:bg-white dark:hover:bg-zinc-700 transition-colors"
-                        >
-                          <Star
-                            size={16}
-                            className={board.is_favorite ? 'fill-yellow-400 text-yellow-400' : 'text-gray-400'}
-                          />
-                        </button>
+                        {/* Favorite star - only for owned boards */}
+                        {!isSharedView && (
+                          <button
+                            onClick={(e) => handleToggleFavorite(board.id, board.is_favorite, e)}
+                            className="absolute top-3 right-3 z-10 p-1.5 rounded-full bg-white/80 dark:bg-zinc-800/80 backdrop-blur-sm hover:bg-white dark:hover:bg-zinc-700 transition-colors"
+                          >
+                            <Star
+                              size={16}
+                              className={board.is_favorite ? 'fill-yellow-400 text-yellow-400' : 'text-gray-400'}
+                            />
+                          </button>
+                        )}
+
+                        {/* Permission badge for shared boards */}
+                        {isSharedView && (
+                          <div className={`absolute top-3 right-3 z-10 px-2 py-1 rounded-full backdrop-blur-sm text-xs font-medium flex items-center ${
+                            boardPermission === 'edit'
+                              ? 'bg-blue-100/90 dark:bg-blue-900/50 text-blue-700 dark:text-blue-300'
+                              : 'bg-amber-100/90 dark:bg-amber-900/50 text-amber-700 dark:text-amber-300'
+                          }`}>
+                            {boardPermission === 'edit' ? (
+                              <>
+                                <Edit3 size={12} className="mr-1" />
+                                Edit
+                              </>
+                            ) : (
+                              <>
+                                <Eye size={12} className="mr-1" />
+                                View
+                              </>
+                            )}
+                          </div>
+                        )}
 
                         {/* Thumbnail Placeholder */}
                         <div className={`h-2/3 w-full ${board.thumbnail_color} relative p-4 transition-transform group-hover:scale-105 duration-500`}>
@@ -379,19 +437,27 @@ export const Dashboard: React.FC<DashboardProps> = ({ onOpenBoard, theme, toggle
                                  <h3 className="font-bold text-ink-900 dark:text-gray-100 truncate pr-4">{board.title}</h3>
                                  <p className="text-xs text-gray-400 mt-1 flex items-center">
                                     <Clock size={10} className="mr-1" /> {formatRelativeTime(board.last_accessed_at)}
+                                    {isSharedView && (
+                                      <span className="ml-2 flex items-center">
+                                        <Users size={10} className="mr-1" /> Shared
+                                      </span>
+                                    )}
                                  </p>
                               </div>
-                              <button
-                                onClick={(e) => handleDeleteBoard(board.id, e)}
-                                className="text-gray-400 hover:text-red-500 dark:hover:text-red-400 p-1 rounded-full hover:bg-gray-100 dark:hover:bg-zinc-700 transition-colors"
-                                title="Delete board"
-                              >
-                                 <Trash2 size={16} />
-                              </button>
+                              {!isSharedView && (
+                                <button
+                                  onClick={(e) => handleDeleteBoard(board.id, e)}
+                                  className="text-gray-400 hover:text-red-500 dark:hover:text-red-400 p-1 rounded-full hover:bg-gray-100 dark:hover:bg-zinc-700 transition-colors"
+                                  title="Delete board"
+                                >
+                                   <Trash2 size={16} />
+                                </button>
+                              )}
                            </div>
                         </div>
                      </div>
-                  ))}
+                    );
+                  })}
                </div>
             )}
          </div>
