@@ -25,6 +25,19 @@ export interface Board {
   last_accessed_at: string;
 }
 
+export interface BoardShare {
+  id: string;
+  board_id: string;
+  share_token: string;
+  shared_with_user_id: string | null;
+  permission: 'view' | 'edit';
+  created_by: string;
+  created_at: string;
+  // Joined data
+  board?: Board;
+  owner_email?: string;
+}
+
 // Folder Operations
 export const folderOperations = {
   /**
@@ -269,20 +282,16 @@ export const boardOperations = {
   /**
    * Save shapes to a board
    */
-  async saveShapes(id: string, shapes: any[]): Promise<Board> {
-    const { data, error } = await supabase
+  async saveShapes(id: string, shapes: any[]): Promise<void> {
+    const { error } = await supabase
       .from('boards')
       .update({ shapes })
-      .eq('id', id)
-      .select()
-      .single();
+      .eq('id', id);
 
     if (error) {
       console.error('Error saving shapes:', error);
       throw error;
     }
-
-    return data;
   },
 
   /**
@@ -298,5 +307,283 @@ export const boardOperations = {
       console.error('Error updating last accessed:', error);
       throw error;
     }
+  },
+};
+
+// Helper to generate a random token
+const generateShareToken = (): string => {
+  const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
+  let result = '';
+  for (let i = 0; i < 24; i++) {
+    result += chars.charAt(Math.floor(Math.random() * chars.length));
+  }
+  return result;
+};
+
+// Share Operations
+export const shareOperations = {
+  /**
+   * Create a new share for a board
+   */
+  async createShare(boardId: string, permission: 'view' | 'edit'): Promise<BoardShare> {
+    const { data: user } = await supabase.auth.getUser();
+    if (!user.user) {
+      throw new Error('User not authenticated');
+    }
+
+    const shareToken = generateShareToken();
+
+    const { data, error } = await supabase
+      .from('board_shares')
+      .insert({
+        board_id: boardId,
+        share_token: shareToken,
+        permission,
+        created_by: user.user.id,
+      })
+      .select()
+      .single();
+
+    if (error) {
+      console.error('Error creating share:', error);
+      throw error;
+    }
+
+    return data;
+  },
+
+  /**
+   * Get share by token (for URL access)
+   */
+  async getShareByToken(token: string): Promise<BoardShare | null> {
+    const { data, error } = await supabase
+      .from('board_shares')
+      .select('*, boards(*)')
+      .eq('share_token', token)
+      .single();
+
+    if (error) {
+      if (error.code === 'PGRST116') {
+        // No rows returned
+        return null;
+      }
+      console.error('Error fetching share by token:', error);
+      throw error;
+    }
+
+    // Transform the response to include board data
+    if (data && data.boards) {
+      return {
+        ...data,
+        board: data.boards as Board,
+      };
+    }
+
+    return data;
+  },
+
+  /**
+   * Get all shares for a board (for owner to manage)
+   */
+  async getSharesForBoard(boardId: string): Promise<BoardShare[]> {
+    const { data, error } = await supabase
+      .from('board_shares')
+      .select('*')
+      .eq('board_id', boardId)
+      .order('created_at', { ascending: false });
+
+    if (error) {
+      console.error('Error fetching shares for board:', error);
+      throw error;
+    }
+
+    return data || [];
+  },
+
+  /**
+   * Get boards shared with current user
+   */
+  async getSharedWithMe(): Promise<(BoardShare & { board: Board })[]> {
+    const { data: user } = await supabase.auth.getUser();
+    if (!user.user) {
+      throw new Error('User not authenticated');
+    }
+
+    const { data, error } = await supabase
+      .from('board_shares')
+      .select('*, boards(*)')
+      .eq('shared_with_user_id', user.user.id)
+      .order('created_at', { ascending: false });
+
+    if (error) {
+      console.error('Error fetching shared boards:', error);
+      throw error;
+    }
+
+    // Transform the response to include board data
+    return (data || []).map(share => ({
+      ...share,
+      board: share.boards as Board,
+    }));
+  },
+
+  /**
+   * Update share permission
+   */
+  async updateSharePermission(shareId: string, permission: 'view' | 'edit'): Promise<void> {
+    const { error } = await supabase
+      .from('board_shares')
+      .update({ permission })
+      .eq('id', shareId);
+
+    if (error) {
+      console.error('Error updating share permission:', error);
+      throw error;
+    }
+  },
+
+  /**
+   * Revoke/delete a share
+   */
+  async revokeShare(shareId: string): Promise<void> {
+    const { error } = await supabase
+      .from('board_shares')
+      .delete()
+      .eq('id', shareId);
+
+    if (error) {
+      console.error('Error revoking share:', error);
+      throw error;
+    }
+  },
+
+  /**
+   * Claim a share (assign to current user when they access via token)
+   */
+  async claimShare(token: string): Promise<BoardShare | null> {
+    const { data: user } = await supabase.auth.getUser();
+    if (!user.user) {
+      throw new Error('User not authenticated');
+    }
+
+    // First, get the share to check if it's unclaimed or already claimed by this user
+    const { data: existingShare, error: fetchError } = await supabase
+      .from('board_shares')
+      .select('*, boards(*)')
+      .eq('share_token', token)
+      .single();
+
+    if (fetchError) {
+      if (fetchError.code === 'PGRST116') {
+        return null; // Share not found
+      }
+      console.error('Error fetching share:', fetchError);
+      throw fetchError;
+    }
+
+    // If already claimed by this user, return it
+    if (existingShare.shared_with_user_id === user.user.id) {
+      return {
+        ...existingShare,
+        board: existingShare.boards as Board,
+      };
+    }
+
+    // If already claimed by someone else, check if board owner is sharing
+    if (existingShare.shared_with_user_id !== null) {
+      // Create a new share for this user with the same permission
+      const newShareToken = generateShareToken();
+      const { data: newShare, error: createError } = await supabase
+        .from('board_shares')
+        .insert({
+          board_id: existingShare.board_id,
+          share_token: newShareToken,
+          permission: existingShare.permission,
+          created_by: existingShare.created_by,
+          shared_with_user_id: user.user.id,
+        })
+        .select('*, boards(*)')
+        .single();
+
+      if (createError) {
+        // If unique constraint violation, user already has access
+        if (createError.code === '23505') {
+          const { data: userShare } = await supabase
+            .from('board_shares')
+            .select('*, boards(*)')
+            .eq('board_id', existingShare.board_id)
+            .eq('shared_with_user_id', user.user.id)
+            .single();
+
+          if (userShare) {
+            return {
+              ...userShare,
+              board: userShare.boards as Board,
+            };
+          }
+        }
+        console.error('Error creating share for user:', createError);
+        throw createError;
+      }
+
+      return newShare ? {
+        ...newShare,
+        board: newShare.boards as Board,
+      } : null;
+    }
+
+    // Claim the unclaimed share
+    const { data, error } = await supabase
+      .from('board_shares')
+      .update({ shared_with_user_id: user.user.id })
+      .eq('share_token', token)
+      .is('shared_with_user_id', null) // Only update if still unclaimed
+      .select('*, boards(*)')
+      .single();
+
+    if (error) {
+      console.error('Error claiming share:', error);
+      throw error;
+    }
+
+    return data ? {
+      ...data,
+      board: data.boards as Board,
+    } : null;
+  },
+
+  /**
+   * Check if user has access to a board (owner or shared)
+   */
+  async checkBoardAccess(boardId: string): Promise<{ hasAccess: boolean; permission: 'owner' | 'view' | 'edit' | null }> {
+    const { data: user } = await supabase.auth.getUser();
+    if (!user.user) {
+      return { hasAccess: false, permission: null };
+    }
+
+    // Check if owner
+    const { data: board } = await supabase
+      .from('boards')
+      .select('user_id')
+      .eq('id', boardId)
+      .single();
+
+    if (board?.user_id === user.user.id) {
+      return { hasAccess: true, permission: 'owner' };
+    }
+
+    // Check if shared with user
+    const { data: share } = await supabase
+      .from('board_shares')
+      .select('permission')
+      .eq('board_id', boardId)
+      .eq('shared_with_user_id', user.user.id)
+      .single();
+
+    if (share) {
+      return { hasAccess: true, permission: share.permission as 'view' | 'edit' };
+    }
+
+    return { hasAccess: false, permission: null };
   },
 };

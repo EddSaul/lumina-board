@@ -6,6 +6,8 @@ interface AuthContextType {
   user: User | null;
   session: Session | null;
   loading: boolean;
+  returnUrl: string | null;
+  setReturnUrl: (url: string | null) => void;
   signInWithGoogle: () => Promise<void>;
   signInWithEmail: (email: string, password: string) => Promise<{ error: AuthError | null }>;
   signUpWithEmail: (email: string, password: string) => Promise<{ error: AuthError | null }>;
@@ -18,6 +20,16 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const [user, setUser] = useState<User | null>(null);
   const [session, setSession] = useState<Session | null>(null);
   const [loading, setLoading] = useState(true);
+  const [returnUrl, setReturnUrl] = useState<string | null>(() => {
+    // Check URL for share path on initial load
+    if (typeof window !== 'undefined') {
+      const path = window.location.pathname;
+      if (path.startsWith('/share/')) {
+        return window.location.href;
+      }
+    }
+    return null;
+  });
 
   useEffect(() => {
     // Get initial session
@@ -38,10 +50,12 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   }, []);
 
   const signInWithGoogle = async () => {
+    // Use return URL if set (e.g., for share links), otherwise default to origin
+    const redirectUrl = returnUrl || window.location.origin;
     await supabase.auth.signInWithOAuth({
       provider: 'google',
       options: {
-        redirectTo: window.location.origin,
+        redirectTo: redirectUrl,
       },
     });
   };
@@ -71,6 +85,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       user,
       session,
       loading,
+      returnUrl,
+      setReturnUrl,
       signInWithGoogle,
       signInWithEmail,
       signUpWithEmail,

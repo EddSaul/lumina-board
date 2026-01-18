@@ -1,8 +1,10 @@
-  import React, { useState, useRef, useEffect } from 'react';
-import { Undo2, Redo2, Check, Settings2, Grid3X3, Circle, LayoutTemplate, Save, CloudCheck } from 'lucide-react';
+  import React, { useState, useRef, useEffect, useCallback, useMemo } from 'react';
+import { Undo2, Redo2, Check, Settings2, Grid3X3, Circle, LayoutTemplate, Save, CloudCheck, Eye } from 'lucide-react';
 import { Shape, ToolType, Point, PathShape, GeoShape, ConnectorShape, StickyShape, TextShape, Theme, User, GeoType, ConnectorType, BackgroundType, ResizeHandle } from '../../types';
 import { COLORS } from '../../constants';
 import { useHistory } from '../../hooks/useHistory';
+import { useCollaboration } from '../../hooks/useCollaboration';
+import { useAuth } from '../../contexts/AuthContext';
 import { Toast } from '../Common/Toast';
 import { Modal } from '../Common/Modal';
 import { RemoteCursor } from './RemoteCursor';
@@ -10,6 +12,7 @@ import { Sidebar } from '../Layout/Sidebar';
 import { TopBar } from '../Layout/TopBar';
 import { Toolbar } from './Toolbar';
 import { PropertiesPanel } from './PropertiesPanel';
+import { ShareModal } from '../Share/ShareModal';
 import * as Geo from '../../utils/geometry';
 import { boardOperations } from '../../lib/database';
 
@@ -19,12 +22,27 @@ interface BoardProps {
   onSwitchBoard?: (boardId: string) => void;
   theme: Theme;
   toggleTheme: () => void;
+  permission?: 'view' | 'edit' | 'owner';
+  isSharedView?: boolean;
 }
 
-export const Board: React.FC<BoardProps> = ({ boardId, onBack, onSwitchBoard, theme, toggleTheme }) => {
+export const Board: React.FC<BoardProps> = ({
+  boardId,
+  onBack,
+  onSwitchBoard,
+  theme,
+  toggleTheme,
+  permission = 'owner',
+  isSharedView = false
+}) => {
+  // Determine if in read-only mode
+  const isReadOnly = permission === 'view';
+  const isOwner = permission === 'owner';
+
   // Board Settings State
   const [backgroundType, setBackgroundType] = useState<BackgroundType>('grid');
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+  const [isShareModalOpen, setIsShareModalOpen] = useState(false);
 
   // Tools State
   const [activeTool, setActiveTool] = useState<ToolType>('select');
@@ -66,7 +84,73 @@ export const Board: React.FC<BoardProps> = ({ boardId, onBack, onSwitchBoard, th
   const [showShortcuts, setShowShortcuts] = useState(false);
   const [toast, setToast] = useState<{msg: string, visible: boolean}>({msg: '', visible: false});
   const [collaboratorsOpen, setCollaboratorsOpen] = useState(false);
-  const [remoteCursors] = useState<{id: string, x: number, y: number, user: User}[]>([]);
+
+  // Auth and Collaboration
+  const { user: authUser } = useAuth();
+  const isLocalSaveRef = useRef(false);
+  const interactionStateRef = useRef(interactionState);
+  interactionStateRef.current = interactionState;
+
+  // Handle remote shape changes - use refs to avoid dependency issues
+  const handleRemoteShapesChange = useCallback((remoteShapes: Shape[]) => {
+    // Ignore if we just saved (to avoid feedback loop)
+    if (isLocalSaveRef.current) {
+      isLocalSaveRef.current = false;
+      return;
+    }
+    // Only apply if we're not actively interacting
+    if (interactionStateRef.current === 'idle') {
+      setState(remoteShapes);
+    }
+  }, [setState]);
+
+  const { collaborators, broadcastCursor, broadcastShapes } = useCollaboration({
+    boardId,
+    userId: authUser?.id || null,
+    userName: authUser?.user_metadata?.full_name || authUser?.email?.split('@')[0] || null,
+    userAvatar: authUser?.user_metadata?.avatar_url || null,
+    onShapesChange: handleRemoteShapesChange,
+  });
+
+  // Wrapper for pushState that also broadcasts to collaborators
+  const pushStateAndBroadcast = useCallback((shapes: Shape[]) => {
+    pushState(shapes);
+    broadcastShapes(shapes);
+  }, [pushState, broadcastShapes]);
+
+  // Transform collaborators to remote cursors format
+  const remoteCursors = collaborators
+    .filter(c => c.cursor !== null)
+    .map(c => ({
+      id: c.id,
+      x: c.cursor!.x,
+      y: c.cursor!.y,
+      user: c.user,
+    }));
+
+  // Create current user object for TopBar
+  const currentUser: User | null = useMemo(() => {
+    if (!authUser) return null;
+    const name = authUser.user_metadata?.full_name || authUser.email?.split('@')[0] || 'Anonymous';
+    // Generate consistent color from user ID
+    const colors = ['#6366f1', '#ec4899', '#f97316', '#22c55e', '#06b6d4', '#a855f7', '#eab308', '#ef4444'];
+    let hash = 0;
+    for (let i = 0; i < authUser.id.length; i++) {
+      hash = ((hash << 5) - hash) + authUser.id.charCodeAt(i);
+      hash = hash & hash;
+    }
+    return {
+      id: authUser.id,
+      name,
+      avatar: authUser.user_metadata?.avatar_url || '',
+      color: colors[Math.abs(hash) % colors.length],
+    };
+  }, [authUser]);
+
+  // Get collaborator users for TopBar
+  const collaboratorUsers = useMemo(() => {
+    return collaborators.map(c => c.user);
+  }, [collaborators]);
 
   // Refs
   const svgRef = useRef<SVGSVGElement>(null);
@@ -78,8 +162,12 @@ export const Board: React.FC<BoardProps> = ({ boardId, onBack, onSwitchBoard, th
   // --- Helpers ---
   const showToast = (msg: string) => setToast({ msg, visible: true });
 
-  const copyLink = () => {
-    showToast('Link copied to clipboard');
+  const openShareModal = () => {
+    if (isOwner) {
+      setIsShareModalOpen(true);
+    } else {
+      showToast('Only the board owner can manage sharing');
+    }
   };
 
   const getShapeById = (id: string) => currentShapes.find(s => s.id === id);
@@ -152,7 +240,7 @@ export const Board: React.FC<BoardProps> = ({ boardId, onBack, onSwitchBoard, th
   const handleShapeUpdate = (updates: Partial<Shape>) => {
     if (!selectedId) return;
     const newShapes = currentShapes.map(s => s.id === selectedId ? { ...s, ...updates } as Shape : s);
-    pushState(newShapes);
+    pushStateAndBroadcast(newShapes);
     // Also update temp if exists to reflect immediately without drag end
     if (tempShape) setTempShape({ ...tempShape, ...updates } as Shape);
   };
@@ -174,7 +262,7 @@ export const Board: React.FC<BoardProps> = ({ boardId, onBack, onSwitchBoard, th
         return true;
       });
 
-      pushState(newShapes);
+      pushStateAndBroadcast(newShapes);
       setSelectedId(null);
       setTempShape(null);
       showToast('Item deleted');
@@ -191,7 +279,7 @@ export const Board: React.FC<BoardProps> = ({ boardId, onBack, onSwitchBoard, th
           x: (s as any).x ? (s as any).x + 20 : 0, 
           y: (s as any).y ? (s as any).y + 20 : 0 
         } as Shape;
-        pushState([...currentShapes, newShape]);
+        pushStateAndBroadcast([...currentShapes, newShape]);
         setSelectedId(newShape.id);
         showToast('Duplicated');
       }
@@ -209,13 +297,18 @@ export const Board: React.FC<BoardProps> = ({ boardId, onBack, onSwitchBoard, th
     } else if (dir === 'down' && idx > 0) {
       [newShapes[idx], newShapes[idx - 1]] = [newShapes[idx - 1], newShapes[idx]];
     }
-    pushState(newShapes);
+    pushStateAndBroadcast(newShapes);
   };
 
   // --- Event Handlers ---
 
   const handlePointerDown = (e: React.MouseEvent | React.TouchEvent) => {
     if (isMenuOpen || isSettingsOpen) return;
+
+    // In read-only mode, only allow panning
+    if (isReadOnly && activeTool !== 'hand' && activeTool !== 'select') {
+      return;
+    }
     
     // 1. Coordinates
     const screen = 'touches' in e ? { x: e.touches[0].clientX, y: e.touches[0].clientY } : { x: (e as React.MouseEvent).clientX, y: (e as React.MouseEvent).clientY };
@@ -231,8 +324,9 @@ export const Board: React.FC<BoardProps> = ({ boardId, onBack, onSwitchBoard, th
     }
 
     // 3. Handle Hit Detection (check handles before shape body)
+    // Skip handle detection in read-only mode
     let clickedHandle: ResizeHandle | null = null;
-    if (activeTool === 'select' && selectedId) {
+    if (activeTool === 'select' && selectedId && !isReadOnly) {
       const selectedShape = getShapeById(selectedId);
       // Only check handles for resizable shapes
       if (selectedShape && (selectedShape.type === 'geo' || selectedShape.type === 'sticky' || selectedShape.type === 'text')) {
@@ -241,7 +335,7 @@ export const Board: React.FC<BoardProps> = ({ boardId, onBack, onSwitchBoard, th
           setActiveResizeHandle(clickedHandle);
           initialShapeState.current = selectedShape;
           setTempShape(selectedShape);
-          
+
           if (clickedHandle === 'rotate') {
             setInteractionState('rotating');
             initialRotation.current = (selectedShape as any).rotation || 0;
@@ -267,16 +361,19 @@ export const Board: React.FC<BoardProps> = ({ boardId, onBack, onSwitchBoard, th
       if (clickedShapeId) {
         // If clicking a new shape or the same shape
         setSelectedId(clickedShapeId);
-        setInteractionState('idle'); 
+        setInteractionState('idle');
         setActiveResizeHandle(null);
-        
-        // Prepare for potential drag
-        const s = getShapeById(clickedShapeId)!;
-        initialShapeState.current = s;
-        setTempShape(s);
-        
-        // We set state to dragging immediately if clicked on shape body
-        setInteractionState('dragging');
+
+        // In read-only mode, only allow selection (viewing), not dragging
+        if (!isReadOnly) {
+          // Prepare for potential drag
+          const s = getShapeById(clickedShapeId)!;
+          initialShapeState.current = s;
+          setTempShape(s);
+
+          // We set state to dragging immediately if clicked on shape body
+          setInteractionState('dragging');
+        }
 
       } else {
         setSelectedId(null);
@@ -350,7 +447,10 @@ export const Board: React.FC<BoardProps> = ({ boardId, onBack, onSwitchBoard, th
   const handlePointerMove = (e: React.MouseEvent | React.TouchEvent) => {
     const screen = 'touches' in e ? { x: e.touches[0].clientX, y: e.touches[0].clientY } : { x: (e as React.MouseEvent).clientX, y: (e as React.MouseEvent).clientY };
     const world = Geo.screenToWorld(screen.x, screen.y, pan, zoom, svgRef);
-    
+
+    // Broadcast cursor position to collaborators
+    broadcastCursor(world);
+
     if (isPanning) {
       const dx = screen.x - lastMousePos.current.x;
       const dy = screen.y - lastMousePos.current.y;
@@ -521,12 +621,12 @@ export const Board: React.FC<BoardProps> = ({ boardId, onBack, onSwitchBoard, th
                 strokeWidth: 4,
                 opacity: 1
              };
-             pushState([...currentShapes, newShape]);
+             pushStateAndBroadcast([...currentShapes, newShape]);
           }
           setCurrentPoints([]);
        } else if (tempShape) {
           if ((tempShape as any).width && (tempShape as any).width > 5) {
-             pushState([...currentShapes, tempShape]);
+             pushStateAndBroadcast([...currentShapes, tempShape]);
              setSelectedId(tempShape.id);
              setActiveTool('select');
           }
@@ -556,7 +656,7 @@ export const Board: React.FC<BoardProps> = ({ boardId, onBack, onSwitchBoard, th
 
          return s;
        });
-       pushState(newShapes);
+       pushStateAndBroadcast(newShapes);
     } else if (interactionState === 'connecting' && tempShape && e) {
        // Check if we're ending on a shape
        const screen = 'touches' in e ? { x: e.changedTouches[0].clientX, y: e.changedTouches[0].clientY } : { x: (e as React.MouseEvent).clientX, y: (e as React.MouseEvent).clientY };
@@ -590,12 +690,12 @@ export const Board: React.FC<BoardProps> = ({ boardId, onBack, onSwitchBoard, th
          }
        }
 
-       pushState([...currentShapes, finalConn]);
+       pushStateAndBroadcast([...currentShapes, finalConn]);
        setActiveTool('select');
     } else if ((interactionState === 'resizing' || interactionState === 'rotating') && tempShape && selectedId) {
        // Commit resize/rotate to shape
        const newShapes = currentShapes.map(s => s.id === selectedId ? tempShape : s);
-       pushState(newShapes);
+       pushStateAndBroadcast(newShapes);
     }
 
     setInteractionState('idle');
@@ -651,19 +751,22 @@ export const Board: React.FC<BoardProps> = ({ boardId, onBack, onSwitchBoard, th
     }
 
     try {
+      isLocalSaveRef.current = true;
       await boardOperations.saveShapes(boardId, currentShapes);
       if (onSwitchBoard) {
         onSwitchBoard(newBoardId);
       }
     } catch (error) {
       console.error('Error saving board before switch:', error);
+      isLocalSaveRef.current = false;
       showToast('Failed to save board');
     }
   };
 
-  // Auto-save shapes when changed
+  // Auto-save shapes when changed (only if user has edit permission)
   useEffect(() => {
     if (!boardLoaded) return; // Don't save until initial load is complete
+    if (isReadOnly) return; // Don't save in read-only mode
 
     setSaveState('unsaved');
 
@@ -676,12 +779,14 @@ export const Board: React.FC<BoardProps> = ({ boardId, onBack, onSwitchBoard, th
     saveTimeoutRef.current = setTimeout(async () => {
       try {
         setSaveState('saving');
+        isLocalSaveRef.current = true; // Flag to ignore our own change event
         await boardOperations.saveShapes(boardId, currentShapes);
         setSaveState('saved');
         setLastSaveTime(new Date());
       } catch (error) {
         console.error('Error saving board:', error);
         setSaveState('unsaved');
+        isLocalSaveRef.current = false;
         showToast('Failed to save changes');
       }
     }, 5000);
@@ -691,7 +796,7 @@ export const Board: React.FC<BoardProps> = ({ boardId, onBack, onSwitchBoard, th
         clearTimeout(saveTimeoutRef.current);
       }
     };
-  }, [currentShapes, boardLoaded, boardId]);
+  }, [currentShapes, boardLoaded, boardId, isReadOnly]);
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -1013,7 +1118,7 @@ export const Board: React.FC<BoardProps> = ({ boardId, onBack, onSwitchBoard, th
           theme={theme}
           isGridOn={backgroundType === 'grid'}
           toggleGrid={() => setBackgroundType(prev => prev === 'grid' ? 'none' : 'grid')}
-          onCreateBoard={() => pushState([])}
+          onCreateBoard={() => pushStateAndBroadcast([])}
           onShowShortcuts={() => setShowShortcuts(true)}
           onOpenSettings={() => { setIsMenuOpen(false); setIsSettingsOpen(true); }}
           onBackToDashboard={onBack}
@@ -1027,12 +1132,12 @@ export const Board: React.FC<BoardProps> = ({ boardId, onBack, onSwitchBoard, th
           onMenuClick={() => setIsMenuOpen(true)}
           collaboratorsOpen={collaboratorsOpen}
           setCollaboratorsOpen={setCollaboratorsOpen}
-          onShare={copyLink}
+          onShare={openShareModal}
           theme={theme}
           toggleTheme={toggleTheme}
           onLogout={onBack}
           boardTitle={currentBoardTitle}
-          onRenameBoard={async (newTitle) => {
+          onRenameBoard={isOwner ? async (newTitle) => {
             try {
               await boardOperations.updateBoardTitle(boardId, newTitle);
               setCurrentBoardTitle(newTitle);
@@ -1041,7 +1146,11 @@ export const Board: React.FC<BoardProps> = ({ boardId, onBack, onSwitchBoard, th
               console.error('Error renaming board:', error);
               showToast('Failed to rename board');
             }
-          }}
+          } : undefined}
+          isSharedView={isSharedView}
+          permission={permission}
+          currentUser={currentUser}
+          collaborators={collaboratorUsers}
        />
        
        <div className={`flex-1 relative ${getCursorStyle()}`} onWheel={handleWheel}>
@@ -1107,50 +1216,73 @@ export const Board: React.FC<BoardProps> = ({ boardId, onBack, onSwitchBoard, th
              ) : null;
           })()}
 
-          <Toolbar 
-            activeTool={activeTool} 
-            setActiveTool={setActiveTool}
-            activeGeo={activeGeo} 
-            setActiveGeo={setActiveGeo}
-            activeConnector={activeConnector} 
-            setActiveConnector={setActiveConnector}
-            color={color} 
-            setColor={setColor}
-            onClear={() => pushState([])}
-            onAiGenerate={() => showToast("AI Generation coming soon!")}
-            isHidden={interactionState !== 'idle'}
-          />
+          {!isReadOnly && (
+            <Toolbar
+              activeTool={activeTool}
+              setActiveTool={setActiveTool}
+              activeGeo={activeGeo}
+              setActiveGeo={setActiveGeo}
+              activeConnector={activeConnector}
+              setActiveConnector={setActiveConnector}
+              color={color}
+              setColor={setColor}
+              onClear={() => pushStateAndBroadcast([])}
+              onAiGenerate={() => showToast("AI Generation coming soon!")}
+              isHidden={interactionState !== 'idle'}
+            />
+          )}
 
           <div className="absolute bottom-6 right-6 flex items-center space-x-2">
-             {/* Save indicator */}
-             <div className="px-3 py-2 bg-white dark:bg-zinc-800 rounded-full shadow-lg flex items-center space-x-2 text-sm">
-                {saveState === 'saving' && (
-                  <>
-                    <Save size={16} className="text-gray-500 animate-pulse" />
-                    <span className="text-gray-500">Saving...</span>
-                  </>
-                )}
-                {saveState === 'saved' && (
-                  <>
-                    <CloudCheck size={16} className="text-green-500" />
-                    <span className="text-gray-500">
-                      {lastSaveTime ? `Saved ${Math.floor((new Date().getTime() - lastSaveTime.getTime()) / 1000)}s ago` : 'Saved'}
-                    </span>
-                  </>
-                )}
-                {saveState === 'unsaved' && (
-                  <>
-                    <Save size={16} className="text-orange-500" />
-                    <span className="text-gray-500">Unsaved</span>
-                  </>
-                )}
-             </div>
-             <button onClick={undo} disabled={!canUndo} className="p-3 bg-white dark:bg-zinc-800 rounded-full shadow-lg disabled:opacity-50 text-gray-700 dark:text-gray-200"><Undo2 size={20} /></button>
-             <button onClick={redo} disabled={!canRedo} className="p-3 bg-white dark:bg-zinc-800 rounded-full shadow-lg disabled:opacity-50 text-gray-700 dark:text-gray-200"><Redo2 size={20} /></button>
+             {/* Read-only indicator for shared boards */}
+             {isReadOnly && (
+               <div className="px-3 py-2 bg-amber-100 dark:bg-amber-900/30 rounded-full shadow-lg flex items-center space-x-2 text-sm">
+                 <Eye size={16} className="text-amber-600 dark:text-amber-400" />
+                 <span className="text-amber-700 dark:text-amber-300 font-medium">View Only</span>
+               </div>
+             )}
+             {/* Save indicator (only shown when not read-only) */}
+             {!isReadOnly && (
+               <div className="px-3 py-2 bg-white dark:bg-zinc-800 rounded-full shadow-lg flex items-center space-x-2 text-sm">
+                  {saveState === 'saving' && (
+                    <>
+                      <Save size={16} className="text-gray-500 animate-pulse" />
+                      <span className="text-gray-500">Saving...</span>
+                    </>
+                  )}
+                  {saveState === 'saved' && (
+                    <>
+                      <CloudCheck size={16} className="text-green-500" />
+                      <span className="text-gray-500">
+                        {lastSaveTime ? `Saved ${Math.floor((new Date().getTime() - lastSaveTime.getTime()) / 1000)}s ago` : 'Saved'}
+                      </span>
+                    </>
+                  )}
+                  {saveState === 'unsaved' && (
+                    <>
+                      <Save size={16} className="text-orange-500" />
+                      <span className="text-gray-500">Unsaved</span>
+                    </>
+                  )}
+               </div>
+             )}
+             {!isReadOnly && (
+               <>
+                 <button onClick={undo} disabled={!canUndo} className="p-3 bg-white dark:bg-zinc-800 rounded-full shadow-lg disabled:opacity-50 text-gray-700 dark:text-gray-200"><Undo2 size={20} /></button>
+                 <button onClick={redo} disabled={!canRedo} className="p-3 bg-white dark:bg-zinc-800 rounded-full shadow-lg disabled:opacity-50 text-gray-700 dark:text-gray-200"><Redo2 size={20} /></button>
+               </>
+             )}
           </div>
        </div>
        
        <Toast message={toast.msg} visible={toast.visible} onClose={() => setToast(prev => ({ ...prev, visible: false }))} />
+
+       {/* Share Modal */}
+       <ShareModal
+         isOpen={isShareModalOpen}
+         onClose={() => setIsShareModalOpen(false)}
+         boardId={boardId}
+         boardTitle={currentBoardTitle}
+       />
 
        {/* Settings Modal */}
        <Modal isOpen={isSettingsOpen} onClose={() => setIsSettingsOpen(false)} title="App Settings">
